@@ -108,9 +108,15 @@ float temp_sum = 0.0f;
 
 // RoR (Rate of Rise) calculation
 float current_ror = 0.0f;
+float current_ror_15s = 0.0f;  // 15秒RoR for quick response
 float ror_buf[BUF_SIZE];
 uint16_t ror_count = 0;
 constexpr uint16_t ROR_INTERVAL = 60;  // 60 seconds for RoR calculation
+constexpr uint16_t ROR_INTERVAL_15S = 15;  // 15 seconds for quick RoR
+
+// Stall detection
+bool stall_warning_active = false;
+uint32_t last_stall_check = 0;
 
 // Roast guide variables
 RoastLevel selected_roast_level = ROAST_MEDIUM;
@@ -132,9 +138,11 @@ uint32_t last_critical_warning = 0;
 FirePower current_recommended_fire = FIRE_MEDIUM;
 FirePower last_recommended_fire = FIRE_MEDIUM;
 
-// Button C long press detection
+// Button long press detection
 uint32_t btnC_press_start = 0;
 bool btnC_long_press_handled = false;
+uint32_t btnB_press_start = 0;
+bool btnB_long_press_handled = false;
 constexpr uint32_t LONG_PRESS_DURATION = 2000;  // 2 seconds
 
 void drawGraph();
@@ -147,7 +155,9 @@ void handleButtons();
 void drawStandbyScreen();
 float getAverageTemp();
 float calculateRoR();
+float calculateRoR15s();
 void updateRoRBuffer();
+void checkStallCondition();
 void updateRoastStage();
 void drawRoastLevelSelection();
 RoastTarget getRoastTarget(RoastStage stage, RoastLevel level);
@@ -162,6 +172,7 @@ void playBeep(int duration_ms, int frequency = 1000);
 void playStageChangeBeep();
 void playCriticalWarningBeep();
 void updateFirePowerRecommendation();
+void forceNextStage();
 
 // BLE Server callbacks
 class MyServerCallbacks: public BLEServerCallbacks {
@@ -324,7 +335,34 @@ void handleButtons() {
       M5.Lcd.fillRect(0, GRAPH_Y0, 320, 240 - GRAPH_Y0, TFT_BLACK);
     }
     
-    if (M5.BtnB.wasPressed()) {
+  // Handle Button B press and long press
+  if (M5.BtnB.isPressed()) {
+    if (btnB_press_start == 0) {
+      btnB_press_start = millis();
+      btnB_long_press_handled = false;
+    }
+    
+    // Check for long press (2 seconds) - Manual stage advance
+    if (!btnB_long_press_handled && (millis() - btnB_press_start) >= LONG_PRESS_DURATION) {
+      if (roast_guide_active && current_stage < STAGE_FINISH) {
+        forceNextStage();
+        btnB_long_press_handled = true;
+        
+        // Visual feedback
+        M5.Lcd.fillRect(60, 100, 200, 40, TFT_BLACK);
+        M5.Lcd.drawRect(60, 100, 200, 40, TFT_YELLOW);
+        M5.Lcd.setTextFont(&fonts::lgfxJapanGothic_16);
+        M5.Lcd.setTextColor(TFT_YELLOW);
+        M5.Lcd.setCursor(70, 115);
+        M5.Lcd.printf("MANUAL STAGE ADVANCE");
+        M5.Lcd.setTextColor(TFT_WHITE);
+        delay(1000);
+        need_full_redraw = true;
+      }
+    }
+  } else if (btnB_press_start > 0) {
+    // Button released - short press
+    if (!btnB_long_press_handled) {
       if (display_mode == MODE_GUIDE && !roast_guide_active) {
         // 焙煎レベル変更
         selected_roast_level = (RoastLevel)((selected_roast_level + 1) % ROAST_COUNT);
@@ -342,6 +380,8 @@ void handleButtons() {
         need_full_redraw = true;
       }
     }
+    btnB_press_start = 0;
+  }
   }
   
   // Handle Button C for start/stop and long press clear
@@ -545,6 +585,40 @@ float calculateRoR() {
   return current_temp_val - old_temp;
 }
 
+float calculateRoR15s() {
+  if (count < ROR_INTERVAL_15S) {
+    return 0.0f;  // Not enough data for 15s RoR calculation
+  }
+  
+  // Get temperature from 15 seconds ago
+  uint16_t old_idx = (head - ROR_INTERVAL_15S + BUF_SIZE) % BUF_SIZE;
+  uint16_t current_idx = (head - 1 + BUF_SIZE) % BUF_SIZE;
+  
+  float old_temp = buf[old_idx];
+  float current_temp_val = buf[current_idx];
+  
+  // Calculate 15s RoR and scale to per-minute
+  return (current_temp_val - old_temp) * 4.0f;  // 15s * 4 = 60s
+}
+
+void checkStallCondition() {
+  if (!roast_guide_active || millis() - last_stall_check < 5000) {
+    return; // Check every 5 seconds
+  }
+  
+  last_stall_check = millis();
+  
+  // Check for stall: RoR < 1°C/min for more than 60s after minimum stage time
+  if (current_ror_15s < 1.0f && getStageElapsedTime() > 60) {
+    if (!stall_warning_active) {
+      stall_warning_active = true;
+      playBeep(300, 1500); // Warning beep
+    }
+  } else {
+    stall_warning_active = false;
+  }
+}
+
 void updateRoRBuffer() {
   if (count >= ROR_INTERVAL) {
     ror_buf[head] = current_ror;
@@ -647,19 +721,19 @@ RoastTarget getRoastTarget(RoastStage stage, RoastLevel level) {
      {180, 200, 0, 0, 0, 0, "Warm up roaster to 180-200C", FIRE_HIGH},
      {180, 200, 0, 0, 0, 0, "Warm up roaster to 180-200C", FIRE_HIGH}},
     // STAGE_CHARGE
-    {{150, 170, -20, -10, 30, 60, "Add beans! Temperature will drop", FIRE_OFF},
-     {150, 170, -20, -10, 30, 60, "Add beans! Temperature will drop", FIRE_OFF},
-     {150, 170, -20, -10, 30, 60, "Add beans! Temperature will drop", FIRE_OFF},
-     {150, 170, -20, -10, 30, 60, "Add beans! Temperature will drop", FIRE_OFF},
-     {150, 170, -20, -10, 30, 60, "Add beans! Temperature will drop", FIRE_OFF},
-     {150, 170, -20, -10, 30, 60, "Add beans! Temperature will drop", FIRE_OFF}},
+    {{150, 170, -20, -10, 30, 60, "Add beans! Keep very low fire", FIRE_VERY_LOW},
+     {150, 170, -20, -10, 30, 60, "Add beans! Keep very low fire", FIRE_VERY_LOW},
+     {150, 170, -20, -10, 30, 60, "Add beans! Keep very low fire", FIRE_VERY_LOW},
+     {150, 170, -20, -10, 30, 60, "Add beans! Keep very low fire", FIRE_VERY_LOW},
+     {150, 170, -20, -10, 30, 60, "Add beans! Keep very low fire", FIRE_VERY_LOW},
+     {150, 170, -20, -10, 30, 60, "Add beans! Keep very low fire", FIRE_VERY_LOW}},
     // STAGE_DRYING
-    {{120, 160, 2, 5, 240, 360, "Gentle heat - beans are drying", FIRE_LOW},
-     {120, 160, 2, 5, 240, 360, "Gentle heat - beans are drying", FIRE_LOW},
-     {120, 160, 2, 5, 240, 360, "Gentle heat - beans are drying", FIRE_LOW},
-     {120, 160, 2, 5, 240, 360, "Gentle heat - beans are drying", FIRE_LOW},
-     {120, 160, 2, 5, 240, 360, "Gentle heat - beans are drying", FIRE_LOW},
-     {120, 160, 2, 5, 240, 360, "Gentle heat - beans are drying", FIRE_LOW}},
+    {{130, 160, 4, 6, 240, 360, "Gentle heat - beans are drying", FIRE_LOW},
+     {130, 160, 4, 6, 240, 360, "Gentle heat - beans are drying", FIRE_LOW},
+     {130, 160, 4, 6, 240, 360, "Gentle heat - beans are drying", FIRE_LOW},
+     {130, 160, 4, 6, 240, 360, "Gentle heat - beans are drying", FIRE_LOW},
+     {130, 160, 4, 6, 240, 360, "Gentle heat - beans are drying", FIRE_LOW},
+     {130, 160, 4, 6, 240, 360, "Gentle heat - beans are drying", FIRE_LOW}},
     // STAGE_MAILLARD
     {{150, 180, 5, 8, 180, 300, "Browning begins! Keep steady heat", FIRE_MEDIUM},
      {150, 180, 5, 8, 180, 300, "Browning begins! Keep steady heat", FIRE_MEDIUM},
@@ -668,33 +742,33 @@ RoastTarget getRoastTarget(RoastStage stage, RoastLevel level) {
      {150, 180, 5, 8, 180, 300, "Browning begins! Keep steady heat", FIRE_MEDIUM},
      {150, 180, 5, 8, 180, 300, "Browning begins! Keep steady heat", FIRE_MEDIUM}},
     // STAGE_FIRST_CRACK
-    {{185, 205, 1, 3, 60, 120, "Listen for first crack! Reduce heat", FIRE_LOW},
-     {188, 208, 1, 3, 60, 120, "Listen for first crack! Reduce heat", FIRE_LOW},
-     {190, 210, 1, 3, 60, 120, "Listen for first crack! Reduce heat", FIRE_LOW},
-     {193, 213, 1, 3, 60, 120, "Listen for first crack! Reduce heat", FIRE_LOW},
-     {195, 215, 1, 3, 60, 120, "Listen for first crack! Reduce heat", FIRE_LOW},
-     {198, 218, 1, 3, 60, 120, "Listen for first crack! Reduce heat", FIRE_LOW}},
-    // STAGE_DEVELOPMENT
-    {{195, 210, 1, 2, 90, 180, "Light roast flavor development", FIRE_VERY_LOW},
-     {200, 215, 1, 2, 105, 195, "Medium-light flavor development", FIRE_VERY_LOW},
-     {205, 220, 1, 2, 120, 240, "Medium flavor development", FIRE_LOW},
-     {210, 230, 1, 2, 150, 300, "Medium-dark flavor development", FIRE_LOW},
-     {220, 240, 1, 2, 180, 360, "Dark flavor development", FIRE_MEDIUM},
-     {230, 250, 1, 2, 240, 420, "French roast development", FIRE_MEDIUM}},
+    {{185, 205, 2, 4, 60, 120, "Listen for first crack! Reduce heat", FIRE_LOW},
+     {188, 205, 2, 4, 60, 120, "Listen for first crack! Reduce heat", FIRE_LOW},
+     {190, 205, 2, 4, 60, 120, "Listen for first crack! Reduce heat", FIRE_LOW},
+     {193, 215, 2, 4, 60, 120, "Listen for first crack! Reduce heat", FIRE_LOW},
+     {195, 215, 2, 4, 60, 120, "Listen for first crack! Reduce heat", FIRE_LOW},
+     {198, 215, 2, 4, 60, 120, "Listen for first crack! Reduce heat", FIRE_LOW}},
+    // STAGE_DEVELOPMENT (ΔT +10°C target, Dev% 18-20%)
+    {{195, 205, 2, 5, 60, 120, "Light roast flavor development", FIRE_VERY_LOW},
+     {200, 210, 2, 5, 75, 150, "Medium-light flavor development", FIRE_VERY_LOW},
+     {205, 215, 2, 5, 90, 120, "Medium flavor development", FIRE_LOW},
+     {210, 225, 2, 5, 120, 150, "Medium-dark flavor development", FIRE_LOW},
+     {220, 235, 2, 5, 90, 120, "Dark flavor development", FIRE_LOW},
+     {230, 245, 2, 5, 90, 120, "French roast development", FIRE_LOW}},
     // STAGE_SECOND_CRACK
-    {{210, 225, 0.5, 1.5, 30, 90, "Light second crack - finish soon", FIRE_VERY_LOW},
-     {215, 230, 0.5, 1.5, 45, 105, "Medium-light second crack", FIRE_VERY_LOW},
-     {220, 235, 0.5, 1.5, 60, 120, "Medium second crack", FIRE_VERY_LOW},
-     {225, 240, 0.5, 1.5, 90, 150, "Medium-dark second crack", FIRE_LOW},
-     {230, 250, 0.5, 1.5, 120, 240, "Dark second crack - watch carefully", FIRE_LOW},
-     {235, 260, 0.5, 1.5, 180, 300, "French roast - deep second crack", FIRE_MEDIUM}},
-    // STAGE_FINISH
-    {{200, 240, 0, 0, 0, 0, "Light roast complete! Cool beans", FIRE_OFF},
-     {205, 245, 0, 0, 0, 0, "Medium-light complete! Cool beans", FIRE_OFF},
-     {210, 250, 0, 0, 0, 0, "Medium roast complete! Cool beans", FIRE_OFF},
-     {220, 260, 0, 0, 0, 0, "Medium-dark complete! Cool beans", FIRE_OFF},
-     {235, 270, 0, 0, 0, 0, "Dark roast complete! Cool immediately", FIRE_OFF},
-     {250, 280, 0, 0, 0, 0, "French roast complete! Cool NOW!", FIRE_OFF}}
+    {{225, 235, 1, 2, 30, 90, "Light second crack - finish soon", FIRE_VERY_LOW},
+     {225, 240, 1, 2, 45, 105, "Medium-light second crack", FIRE_VERY_LOW},
+     {230, 245, 1, 2, 60, 120, "Medium second crack", FIRE_VERY_LOW},
+     {230, 250, 1, 2, 90, 150, "Medium-dark second crack", FIRE_LOW},
+     {235, 255, 1, 2, 120, 180, "Dark second crack - watch carefully", FIRE_LOW},
+     {240, 260, 1, 2, 90, 150, "French roast - deep second crack", FIRE_LOW}},
+    // STAGE_FINISH (10°C increments as recommended)
+    {{200, 205, 0, 0, 0, 0, "Light roast complete! Cool beans", FIRE_OFF},
+     {205, 210, 0, 0, 0, 0, "Medium-light complete! Cool beans", FIRE_OFF},
+     {210, 215, 0, 0, 0, 0, "Medium roast complete! Cool beans", FIRE_OFF},
+     {220, 225, 0, 0, 0, 0, "Medium-dark complete! Cool beans", FIRE_OFF},
+     {230, 235, 0, 0, 0, 0, "Dark roast complete! Cool immediately", FIRE_OFF},
+     {240, 250, 0, 0, 0, 0, "French roast complete! Cool NOW!", FIRE_OFF}}
   };
   
   return profiles[stage][level];
@@ -784,12 +858,17 @@ void updateRoastStage() {
     case STAGE_DEVELOPMENT:
       {
         RoastTarget target = getRoastTarget(STAGE_DEVELOPMENT, selected_roast_level);
-        if (current_temp >= target.temp_max || 
-            (selected_roast_level == ROAST_LIGHT && getStageElapsedTime() > 90) ||
-            (selected_roast_level == ROAST_MEDIUM_LIGHT && getStageElapsedTime() > 105) ||
-            (selected_roast_level == ROAST_MEDIUM && getStageElapsedTime() > 180) ||
-            (selected_roast_level == ROAST_MEDIUM_DARK && getStageElapsedTime() > 210)) {
-          if ((selected_roast_level >= ROAST_DARK) && current_temp > 220) {
+        float stage_time = getStageElapsedTime();
+        
+        // 基本的な条件：最低時間経過
+        bool min_time_met = stage_time > target.time_min;
+        
+        // ΔT +10°C達成判定（Dev% 約20%）
+        bool target_delta_reached = (current_temp >= (stage_start_temp + 10.0f));
+        
+        // 段階移行判定（時間またはΔT条件）
+        if (min_time_met && (target_delta_reached || stage_time > target.time_max)) {
+          if (selected_roast_level >= ROAST_DARK && current_temp >= 225) {  // 225°Cに修正
             current_stage = STAGE_SECOND_CRACK;
             stage_start_time = millis();
             second_crack_detected = true;
@@ -797,6 +876,11 @@ void updateRoastStage() {
             current_stage = STAGE_FINISH;
             stage_start_time = millis();
           }
+        }
+        // 安全措置：危険温度到達時
+        else if (current_temp >= 260) {  // 絶対安全停止温度
+          current_stage = STAGE_FINISH;
+          stage_start_time = millis();
         }
       }
       break;
@@ -957,7 +1041,11 @@ void drawGuide() {
   // ボタン指示
   M5.Lcd.setTextFont(&fonts::lgfxJapanGothic_12);
   M5.Lcd.setCursor(10, 230);
-  M5.Lcd.printf("[A]Mode [C]Stop");
+  if (roast_guide_active && current_stage < STAGE_FINISH) {
+    M5.Lcd.printf("[A]Mode [B-Hold]Next Stage [C]Stop");
+  } else {
+    M5.Lcd.printf("[A]Mode [C]Stop");
+  }
 }
 
 const char* getFirePowerName(FirePower fire) {
@@ -1018,6 +1106,52 @@ void playCriticalWarningBeep() {
   for (int i = 0; i < 3; i++) {
     playBeep(150, 2000);
     delay(100);
+  }
+}
+
+void forceNextStage() {
+  if (!roast_guide_active || current_stage >= STAGE_FINISH) return;
+  
+  RoastStage prev_stage = current_stage;
+  
+  // 次の段階に強制移行
+  switch(current_stage) {
+    case STAGE_PREHEAT:
+      current_stage = STAGE_CHARGE;
+      break;
+    case STAGE_CHARGE:
+      current_stage = STAGE_DRYING;
+      break;
+    case STAGE_DRYING:
+      current_stage = STAGE_MAILLARD;
+      break;
+    case STAGE_MAILLARD:
+      current_stage = STAGE_FIRST_CRACK;
+      first_crack_detected = true;
+      break;
+    case STAGE_FIRST_CRACK:
+      current_stage = STAGE_DEVELOPMENT;
+      break;
+    case STAGE_DEVELOPMENT:
+      if (selected_roast_level >= ROAST_DARK) {
+        current_stage = STAGE_SECOND_CRACK;
+        second_crack_detected = true;
+      } else {
+        current_stage = STAGE_FINISH;
+      }
+      break;
+    case STAGE_SECOND_CRACK:
+      current_stage = STAGE_FINISH;
+      break;
+    default:
+      break;
+  }
+  
+  // 段階変更時の処理
+  if (prev_stage != current_stage) {
+    stage_start_time = millis();
+    stage_start_temp = current_temp;
+    playStageChangeBeep();
   }
 }
 
@@ -1132,9 +1266,13 @@ void loop() {
       head = (head + 1) % BUF_SIZE;
       if (count < BUF_SIZE) ++count;
 
-      // Calculate and update RoR
+      // Calculate and update RoR (both 15s and 60s)
       current_ror = calculateRoR();
+      current_ror_15s = calculateRoR15s();
       updateRoRBuffer();
+      
+      // Check for stall condition
+      checkStallCondition();
 
       // Update fire power recommendations and audio notifications
       updateFirePowerRecommendation();
