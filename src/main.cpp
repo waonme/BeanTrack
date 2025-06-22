@@ -829,27 +829,34 @@ void drawRoastLevelSelection() {
   M5.Lcd.fillRect(0, GRAPH_Y0, 320, 240 - GRAPH_Y0, TFT_BLACK);
   M5.Lcd.setTextFont(&fonts::lgfxJapanGothic_16);
   
-  int y_pos = GRAPH_Y0 + 20;
-  M5.Lcd.setCursor(80, y_pos);
+  int y_pos = GRAPH_Y0 + 10;
+  M5.Lcd.setCursor(60, y_pos);
   M5.Lcd.printf(">> Select Roast Level <<");
   
-  y_pos += 40;
+  y_pos += 30;
+  
+  // 2列レイアウトで表示
   for (int i = 0; i < ROAST_COUNT; i++) {
-    M5.Lcd.setCursor(40, y_pos);
+    int col = i % 2;  // 0 or 1
+    int row = i / 2;  // 0, 1, 2
+    
+    int x_pos = col == 0 ? 20 : 170;  // 左列と右列
+    int current_y = y_pos + row * 20;
+    
+    M5.Lcd.setCursor(x_pos, current_y);
     if (i == selected_roast_level) {
       M5.Lcd.setTextColor(TFT_YELLOW);
-      M5.Lcd.printf("> %s <", getRoastLevelName((RoastLevel)i));
+      M5.Lcd.printf("> %s", getRoastLevelName((RoastLevel)i));
       M5.Lcd.setTextColor(TFT_WHITE);
     } else {
       M5.Lcd.printf("  %s", getRoastLevelName((RoastLevel)i));
     }
-    y_pos += 25;
   }
   
-  y_pos += 20;
+  // ボタン指示を画面下部に配置
   M5.Lcd.setTextFont(&fonts::lgfxJapanGothic_12);
-  M5.Lcd.setCursor(10, y_pos);
-  M5.Lcd.printf("[A]Select [B]Change [C]Start");
+  M5.Lcd.setCursor(80, 210);
+  M5.Lcd.printf("[B]Change [C]Start");
 }
 
 void drawGuide() {
