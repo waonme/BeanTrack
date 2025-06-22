@@ -375,7 +375,7 @@ void handleButtons() {
         M5.Lcd.fillScreen(TFT_BLACK);
         M5.Lcd.setTextFont(&fonts::lgfxJapanGothic_24);
         M5.Lcd.setCursor(0, 0);
-        M5.Lcd.println("Real‑Time Temperature");
+        M5.Lcd.println("Real-Time Temperature");
         need_full_redraw = true;
       } else {
         drawStandbyScreen();
@@ -393,7 +393,7 @@ void handleButtons() {
         M5.Lcd.fillScreen(TFT_BLACK);
         M5.Lcd.setTextFont(&fonts::lgfxJapanGothic_24);
         M5.Lcd.setCursor(0, 0);
-        M5.Lcd.println("Real‑Time Temperature");
+        M5.Lcd.println("Real-Time Temperature");
         need_full_redraw = true;
         next_tick = millis();
       } else {
