@@ -10,6 +10,7 @@
 // モジュラー化テスト用
 #define USE_MODULAR_MELODY 1  // 1にするとMelodyPlayerクラスを使用
 #define USE_MODULAR_TICKER 1  // 1にするとTickerFooterクラスを使用
+#define USE_MODULAR_STATS 1   // 1にするとTemperatureStatisticsクラスを使用
 
 #if USE_MODULAR_MELODY
 #include "Audio/MelodyPlayer.h"
@@ -17,6 +18,10 @@
 
 #if USE_MODULAR_TICKER
 #include "Display/TickerFooter.h"
+#endif
+
+#if USE_MODULAR_STATS
+#include "Statistics/TemperatureStatistics.h"
 #endif
 
 #define KM_SDA   21
@@ -135,9 +140,11 @@ uint32_t last_displayed_time = 0;
 bool last_roast_guide_state = false;
 int last_ror_wait_seconds = -1;
 
+#if !USE_MODULAR_STATS
 float temp_min_recorded = INFINITY;
 float temp_max_recorded = -INFINITY;
 float temp_sum = 0.0f;
+#endif
 
 // RoR (Rate of Rise) calculation
 float current_ror = 0.0f;
@@ -359,37 +366,6 @@ inline bool isTickerEnabledWrapper() {
 #endif
 }
 
-// updateTickerSystemInfoのシンプルなスタブ版
-inline void updateTickerSystemInfoWrapper() {
-#if USE_MODULAR_TICKER
-    // モジュラー版では、TickerFooterが自動的にシステム情報を収集する
-    // 必要に応じて情報を追加
-    if (TICKER->isEnabled() && system_state == STATE_RUNNING) {
-        static uint32_t last_update = 0;
-        if (millis() - last_update >= 10000) { // 10秒間隔
-            last_update = millis();
-            
-            // 温度情報
-            if (current_temp > 50.0f) {
-                TICKER->addMessage("温度: %.1f°C", current_temp);
-            }
-            
-            // BLE接続状態
-            if (deviceConnected) {
-                TICKER->addMessage("BLE接続中");
-            }
-            
-            // 統計情報
-            if (count > 60) {
-                float mean_temp = (count > 0) ? temp_sum / count : 0.0f;
-                TICKER->addMessage("平均温度: %.1f°C | 最高: %.1f°C", mean_temp, temp_max_recorded);
-            }
-        }
-    }
-#else
-    updateTickerSystemInfo();
-#endif
-}
 
 
 // セオドア提言：温度バッファの型変換ヘルパー関数
@@ -551,6 +527,107 @@ void drawFooter(const char* instructions);
 float getDangerTemp(RoastLevel level);
 float getCriticalTemp(RoastLevel level);
 
+// 統計ラッパー関数（モジュラー化対応）
+inline float getMinTemp() {
+#if USE_MODULAR_STATS
+  return TEMP_STATS->getMin();
+#else
+  return temp_min_recorded;
+#endif
+}
+
+inline float getMaxTemp() {
+#if USE_MODULAR_STATS
+  return TEMP_STATS->getMax();
+#else
+  return temp_max_recorded;
+#endif
+}
+
+inline float getAverageTemp() {
+#if USE_MODULAR_STATS
+  return TEMP_STATS->getAverage();
+#else
+  if (count == 0) return 0.0f;
+  return temp_sum / count;
+#endif
+}
+
+inline void updateStats(float temp) {
+#if USE_MODULAR_STATS
+  TEMP_STATS->addTemperature(temp);
+#else
+  if (temp < temp_min_recorded) temp_min_recorded = temp;
+  if (temp > temp_max_recorded) temp_max_recorded = temp;
+  temp_sum += temp;
+#endif
+}
+
+inline void resetStats() {
+#if USE_MODULAR_STATS
+  TEMP_STATS->reset();
+#else
+  temp_min_recorded = INFINITY;
+  temp_max_recorded = -INFINITY;
+  temp_sum = 0.0f;
+#endif
+}
+
+inline void recalculateStatsFromBuffer() {
+#if USE_MODULAR_STATS
+  // Create a temporary float buffer for the statistics module
+  float* temp_buf = new float[count];
+  for (uint16_t i = 0; i < count; i++) {
+    temp_buf[i] = getTempFromBuffer((head - count + i + BUF_SIZE) % BUF_SIZE);
+  }
+  TEMP_STATS->recalculateFromBuffer(temp_buf, count, count);
+  delete[] temp_buf;
+#else
+  temp_min_recorded = INFINITY;
+  temp_max_recorded = -INFINITY;
+  temp_sum = 0.0f;
+  for (uint16_t i = 0; i < count; i++) {
+    float temp = getTempFromBuffer((head - count + i + BUF_SIZE) % BUF_SIZE);
+    if (temp > 0.0f) {
+      if (temp < temp_min_recorded) temp_min_recorded = temp;
+      if (temp > temp_max_recorded) temp_max_recorded = temp;
+      temp_sum += temp;
+    }
+  }
+#endif
+}
+
+// Ticker wrapper function (needs to be after statistics wrappers)
+inline void updateTickerSystemInfoWrapper() {
+#if USE_MODULAR_TICKER
+    // モジュラー版では、TickerFooterが自動的にシステム情報を収集する
+    // 必要に応じて情報を追加
+    if (TICKER->isEnabled() && system_state == STATE_RUNNING) {
+        static uint32_t last_update = 0;
+        if (millis() - last_update >= 10000) { // 10秒間隔
+            last_update = millis();
+            
+            // 温度情報
+            if (current_temp > 50.0f) {
+                TICKER->addMessage("温度: %.1f°C", current_temp);
+            }
+            
+            // BLE接続状態
+            if (deviceConnected) {
+                TICKER->addMessage("BLE接続中");
+            }
+            
+            // 統計情報
+            if (count > 60) {
+                TICKER->addMessage("平均温度: %.1f°C | 最高: %.1f°C", getAverageTemp(), getMaxTemp());
+            }
+        }
+    }
+#else
+    updateTickerSystemInfo();
+#endif
+}
+
 // BLE Server callbacks
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
@@ -580,6 +657,11 @@ void setup() {
 #if USE_MODULAR_TICKER
   // TickerFooter初期化
   TICKER->begin();
+#endif
+
+#if USE_MODULAR_STATS
+  // TemperatureStatistics初期化
+  TEMP_STATS->begin();
 #endif
 
   // I2C明示的初期化（M5Unifiedの実装変更に対応）
@@ -629,9 +711,7 @@ void setup() {
   M5.Lcd.fillScreen(TFT_BLACK);
   
   // Initialize statistics
-  temp_min_recorded = INFINITY;
-  temp_max_recorded = -INFINITY;
-  temp_sum = 0.0f;
+  resetStats();
   current_ror = 0.0f;
   ror_count = 0;
   
@@ -957,15 +1037,7 @@ void handleButtons() {
         selected_roast_level = (RoastLevel)((selected_roast_level + 1) % ROAST_COUNT);
       } else {
         // Reset statistics
-        temp_min_recorded = INFINITY;
-        temp_max_recorded = -INFINITY;
-        temp_sum = 0.0f;
-        for (int i = 0; i < count; i++) {
-          float temp = getTempFromBuffer((head - count + i + BUF_SIZE) % BUF_SIZE);
-          if (temp < temp_min_recorded) temp_min_recorded = temp;
-          if (temp > temp_max_recorded) temp_max_recorded = temp;
-          temp_sum += temp;
-        }
+        recalculateStatsFromBuffer();
         need_full_redraw = true;
       }
     }
@@ -986,9 +1058,7 @@ void handleButtons() {
       // Long press: Clear all data and reset emergency state
       count = 0;
       head = 0;
-      temp_min_recorded = INFINITY;
-      temp_max_recorded = -INFINITY;
-      temp_sum = 0.0f;
+      resetStats();
       current_ror = 0.0f;
       ror_count = 0;
       current_stage = STAGE_PREHEAT;
@@ -1149,11 +1219,11 @@ void drawStats() {
   
   y_pos += 25;
   M5.Lcd.setCursor(20, y_pos);
-  M5.Lcd.printf("^ Maximum: %.2f C", temp_max_recorded);
+  M5.Lcd.printf("^ Maximum: %.2f C", getMaxTemp());
   
   y_pos += 25;
   M5.Lcd.setCursor(20, y_pos);
-  M5.Lcd.printf("v Minimum: %.2f C", temp_min_recorded);
+  M5.Lcd.printf("v Minimum: %.2f C", getMinTemp());
   
   y_pos += 25;
   M5.Lcd.setCursor(20, y_pos);
@@ -1165,11 +1235,6 @@ void drawStats() {
   
   // Button instructions（統一フッターに移動）
   drawFooter("[A]Mode [B]Reset [C]Stop");
-}
-
-float getAverageTemp() {
-  if (count == 0) return 0.0f;
-  return temp_sum / count;
 }
 
 void drawStandbyScreen() {
@@ -2307,8 +2372,8 @@ void sendBLEData() {
     // 統計データ
     if (count > 0) {
       JsonObject stats = doc.createNestedObject("stats");
-      stats["min"] = serialized(String(temp_min_recorded, 2));
-      stats["max"] = serialized(String(temp_max_recorded, 2));
+      stats["min"] = serialized(String(getMinTemp(), 2));
+      stats["max"] = serialized(String(getMaxTemp(), 2));
       stats["avg"] = serialized(String(getAverageTemp(), 2));
     }
     
@@ -2379,9 +2444,7 @@ void loop() {
       current_temp = kmeter.getCelsiusTempValue() / 100.0f;
 
       // Update statistics
-      if (current_temp < temp_min_recorded) temp_min_recorded = current_temp;
-      if (current_temp > temp_max_recorded) temp_max_recorded = current_temp;
-      temp_sum += current_temp;
+      updateStats(current_temp);
 
       setTempToBuffer(head, current_temp);
       head = (head + 1) % BUF_SIZE;
