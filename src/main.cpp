@@ -19,6 +19,10 @@ constexpr int16_t  GRAPH_Y0    = 70;
 constexpr int16_t  GRAPH_W     = 300;
 constexpr int16_t  GRAPH_H     = 160;
 
+// 画面明度設定 (0-255: 0=暗い, 255=最大)
+// バッテリー寿命を重視する場合は64-128程度推奨
+constexpr uint8_t  LCD_BRIGHTNESS = 128;
+
 enum DisplayMode {
   MODE_GRAPH = 0,
   MODE_STATS = 1,
@@ -214,6 +218,7 @@ void setup() {
   M5_LOGI("BLE started - Device name: M5Stack-Thermometer");
 
   M5.Lcd.setRotation(1);
+  M5.Lcd.setBrightness(LCD_BRIGHTNESS);  // バッテリー寿命延長のため明度を調整
   M5.Lcd.fillScreen(TFT_BLACK);
   
   // Initialize statistics
