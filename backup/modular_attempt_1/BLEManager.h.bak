@@ -1,0 +1,74 @@
+#pragma once
+
+#include "Config.h"
+#include "TemperatureManager.h"
+
+// BLE接続コールバック
+class MyServerCallbacks : public BLEServerCallbacks {
+public:
+  void onConnect(BLEServer* pServer) override;
+  void onDisconnect(BLEServer* pServer) override;
+};
+
+class BLEManager {
+private:
+  // BLE関連
+  BLEServer* pServer = nullptr;
+  BLECharacteristic* pTxCharacteristic = nullptr;
+  
+  // 接続状態
+  bool deviceConnected = false;
+  bool oldDeviceConnected = false;
+  
+  // 送信制御
+  uint32_t last_ble_send = 0;
+  uint32_t last_full_data_send = 0;
+  
+  // 非ブロッキングBLE再接続待機
+  uint32_t ble_restart_timer = 0;
+  bool ble_restart_pending = false;
+  
+  // 温度管理への参照
+  TemperatureManager* temp_manager;
+  
+  // システム状態への参照
+  SystemState* system_state;
+  DisplayMode* display_mode;
+  
+  // 焙煎ガイド情報
+  bool* roast_guide_active;
+  RoastLevel* selected_roast_level;
+  
+public:
+  BLEManager();
+  ~BLEManager();
+  
+  // 初期化
+  bool begin();
+  
+  // 設定
+  void setTemperatureManager(TemperatureManager* temp_mgr) { temp_manager = temp_mgr; }
+  void setSystemState(SystemState* state) { system_state = state; }
+  void setDisplayMode(DisplayMode* mode) { display_mode = mode; }
+  void setRoastGuideInfo(bool* active, RoastLevel* level) { 
+    roast_guide_active = active; 
+    selected_roast_level = level; 
+  }
+  
+  // メインループ処理
+  void update();
+  
+  // 接続状態
+  bool isConnected() const { return deviceConnected; }
+  
+  // フレンド関数でコールバックからアクセス
+  void setConnected(bool connected) { deviceConnected = connected; }
+  
+private:
+  /**
+   * セオドア提言：BLE差分パケット送信最適化
+   * 温度/RoRデータは1秒間隔、統計データは15秒間隔で送信し帯域節約
+   */
+  void sendBLEData();
+  void handleBLEReconnection();
+};

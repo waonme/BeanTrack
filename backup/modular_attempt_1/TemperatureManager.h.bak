@@ -1,0 +1,66 @@
+#pragma once
+
+#include "Config.h"
+
+class TemperatureManager {
+private:
+  // セオドア提言：メモリ効率化のため int16_t に変更（0.1°C刻み）
+  int16_t buf[BUF_SIZE];  // 0.1°C単位で格納（例：25.3°C → 253）
+  uint16_t head = 0;
+  uint16_t count = 0;
+  
+  // 統計データ
+  float temp_min_recorded = 999.0f;
+  float temp_max_recorded = -999.0f;
+  float temp_sum = 0.0f;
+  
+  // RoR計算用
+  float current_temp = 0.0f;
+  float current_ror = 0.0f;
+  float current_ror_15s = 0.0f;
+  
+  // KMeter関連
+  M5UnitKmeterISO* kmeter;
+  int km_err = 0;
+  
+  // 非ブロッキング初期化
+  uint32_t init_retry_timer = 0;
+  bool init_waiting = false;
+
+public:
+  TemperatureManager();
+  ~TemperatureManager();
+  
+  // 初期化・更新
+  bool begin(M5UnitKmeterISO* kmeter_instance);
+  void update();
+  
+  // 非ブロッキング初期化処理
+  void handleInitialization();
+  bool isInitialized() const { return !init_waiting; }
+  
+  // 温度データアクセス
+  float getCurrentTemp() const { return current_temp; }
+  float getCurrentRoR() const { return current_ror; }
+  float getCurrentRoR15s() const { return current_ror_15s; }
+  int getError() const { return km_err; }
+  
+  // 統計データアクセス
+  float getMinTemp() const { return temp_min_recorded; }
+  float getMaxTemp() const { return temp_max_recorded; }
+  float getAverageTemp() const;
+  uint16_t getDataCount() const { return count; }
+  
+  // バッファ操作
+  void clearData();
+  float getTempFromBuffer(int index) const;
+  
+  // セオドア提言：温度予測システム
+  float predictTemperature(int seconds_ahead) const;
+  bool isTemperatureStable(float threshold = 2.0f) const;
+  
+private:
+  void setTempToBuffer(uint16_t index, float temp);
+  void updateStatistics(float temp);
+  void calculateRoR();
+};

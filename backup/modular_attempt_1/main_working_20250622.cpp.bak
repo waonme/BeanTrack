@@ -5,19 +5,6 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #include <ArduinoJson.h>
-#include <stdarg.h>
-
-// モジュラー化テスト用
-#define USE_MODULAR_MELODY 1  // 1にするとMelodyPlayerクラスを使用
-#define USE_MODULAR_TICKER 1  // 1にするとTickerFooterクラスを使用
-
-#if USE_MODULAR_MELODY
-#include "Audio/MelodyPlayer.h"
-#endif
-
-#if USE_MODULAR_TICKER
-#include "Display/TickerFooter.h"
-#endif
 
 #define KM_SDA   21
 #define KM_SCL   22
@@ -177,14 +164,12 @@ int stage_beep_frequencies[3] = {1000, 1200, 1500};
 int stage_beep_durations[3] = {200, 200, 300};
 
 // セオドア提言：非ブロッキングメロディシステム
-#if !USE_MODULAR_MELODY
 bool melody_active = false;
 uint32_t melody_start = 0;
 int melody_note_index = 0;
 int melody_notes[8];
 int melody_duration = 0;
 uint32_t melody_note_start = 0;
-#endif
 
 // 非ブロッキング初期化待機
 static uint32_t init_retry_timer = 0;
@@ -212,36 +197,11 @@ constexpr uint32_t CRITICAL_BEEP_INTERVAL = 250; // 250ms between beeps
 // Hysteresis values as constexpr
 constexpr float FIRE_HYSTERESIS = 0.5f;  // °C hysteresis for fire power changes
 
-// ティッカーフッター機能
-#if !USE_MODULAR_TICKER
-struct TickerMessage {
-  char text[128];
-  uint32_t added_time;
-};
-
-constexpr int TICKER_MAX_MESSAGES = 10;
-constexpr uint32_t TICKER_MESSAGE_DURATION = 5000; // 各メッセージ5秒表示
-constexpr uint32_t TICKER_SCROLL_SPEED = 50; // スクロール速度(ms)
-constexpr int TICKER_Y_POSITION = 220; // フッター位置
-
-TickerMessage ticker_messages[TICKER_MAX_MESSAGES];
-int ticker_message_count = 0;
-int ticker_current_index = 0;
-int ticker_scroll_offset = 0;
-uint32_t ticker_last_scroll = 0;
-uint32_t ticker_message_start = 0;
-bool ticker_enabled = false;
-#endif
-
 // Melody system for elegant notifications
-#if !USE_MODULAR_MELODY
 struct Melody {
   int notes[8];      // 8音のメロディ
   int duration_ms;   // 各音の長さ
 };
-#else
-using Melody = MelodyPlayer::Melody;
-#endif
 
 // セオドア提言：メロディもPROGMEMで最適化
 const Melody PROGMEM MELODY_STAGE_CHANGE = {{262, 294, 330, 349, 392, 440, 494, 523}, 150};  // C-D-E-F-G-A-B-C上昇
@@ -250,10 +210,8 @@ const Melody PROGMEM MELODY_EMERGENCY = {{880, 831, 784, 740, 698, 659, 622, 587
 const Melody PROGMEM MELODY_COMPLETION = {{392, 523, 392, 523, 392, 523, 659, 523}, 200};    // G-C完成旋律
 
 // セオドア提言：関数宣言（非ブロッキング関数群）
-#if !USE_MODULAR_MELODY
 void updateMelody();
 void playMelody(const Melody& melody_pgm);
-#endif
 
 // Temperature prediction for gas burner
 class TemperaturePredictor {
@@ -289,108 +247,6 @@ public:
 };
 
 TemperaturePredictor predictor;
-
-// 関数宣言
-#if !USE_MODULAR_TICKER
-void addTickerMessage(const char* format, ...);
-void updateTickerSystemInfo();
-void updateTickerFooter();
-#endif
-
-// モジュラー化対応ラッパー関数
-inline void playMelodyWrapper(const Melody& melody_pgm) {
-#if USE_MODULAR_MELODY
-    MELODY_PLAYER->playMelody(melody_pgm);
-#else
-    playMelody(melody_pgm);
-#endif
-}
-
-inline void updateMelodyWrapper() {
-#if USE_MODULAR_MELODY
-    MELODY_PLAYER->update();
-#else
-    updateMelody();
-#endif
-}
-
-// ティッカーフッターラッパー関数
-inline void addTickerMessageWrapper(const char* format, ...) {
-    char buffer[128];
-    va_list args;
-    va_start(args, format);
-    vsnprintf(buffer, sizeof(buffer), format, args);
-    va_end(args);
-    
-#if USE_MODULAR_TICKER
-    TICKER->addMessage("%s", buffer);
-#else
-    addTickerMessage("%s", buffer);
-#endif
-}
-
-inline void updateTickerFooterWrapper() {
-#if USE_MODULAR_TICKER
-    TICKER->update();
-#else
-    updateTickerFooter();
-#endif
-}
-
-inline void setTickerEnabledWrapper(bool enable) {
-#if USE_MODULAR_TICKER
-    TICKER->setEnabled(enable);
-#else
-    ticker_enabled = enable;
-    if (!enable) {
-        M5.Lcd.fillRect(0, TICKER_Y_POSITION, 320, 20, TFT_BLACK);
-    } else {
-        ticker_message_count = 0;
-        addTickerMessage("ティッカーフッター有効化");
-    }
-#endif
-}
-
-inline bool isTickerEnabledWrapper() {
-#if USE_MODULAR_TICKER
-    return TICKER->isEnabled();
-#else
-    return ticker_enabled;
-#endif
-}
-
-// updateTickerSystemInfoのシンプルなスタブ版
-inline void updateTickerSystemInfoWrapper() {
-#if USE_MODULAR_TICKER
-    // モジュラー版では、TickerFooterが自動的にシステム情報を収集する
-    // 必要に応じて情報を追加
-    if (TICKER->isEnabled() && system_state == STATE_RUNNING) {
-        static uint32_t last_update = 0;
-        if (millis() - last_update >= 10000) { // 10秒間隔
-            last_update = millis();
-            
-            // 温度情報
-            if (current_temp > 50.0f) {
-                TICKER->addMessage("温度: %.1f°C", current_temp);
-            }
-            
-            // BLE接続状態
-            if (deviceConnected) {
-                TICKER->addMessage("BLE接続中");
-            }
-            
-            // 統計情報
-            if (count > 60) {
-                float mean_temp = (count > 0) ? temp_sum / count : 0.0f;
-                TICKER->addMessage("平均温度: %.1f°C | 最高: %.1f°C", mean_temp, temp_max_recorded);
-            }
-        }
-    }
-#else
-    updateTickerSystemInfo();
-#endif
-}
-
 
 // セオドア提言：温度バッファの型変換ヘルパー関数
 inline void setTempToBuffer(uint16_t index, float temp) {
@@ -571,16 +427,6 @@ void setup() {
   // セオドア提言：Sprite初期化（真のスクロール実装）
   graph_sprite.createSprite(GRAPH_W, GRAPH_H);
   sprite_initialized = true;
-
-#if USE_MODULAR_MELODY
-  // MelodyPlayer初期化
-  MELODY_PLAYER->begin();
-#endif
-
-#if USE_MODULAR_TICKER
-  // TickerFooter初期化
-  TICKER->begin();
-#endif
 
   // I2C明示的初期化（M5Unifiedの実装変更に対応）
   Wire.begin(KM_SDA, KM_SCL, I2C_FREQ);
@@ -835,35 +681,7 @@ void drawGraph() {
 void handleButtons() {
   // Handle Button A and B only when running
   if (system_state == STATE_RUNNING) {
-    // Check for A+B combination for ticker toggle
-    static bool combo_handled = false;
-    if (M5.BtnA.isPressed() && M5.BtnB.isPressed()) {
-      if (!combo_handled) {
-        bool newState = !isTickerEnabledWrapper();
-        setTickerEnabledWrapper(newState);
-        combo_handled = true;
-        
-        // Visual feedback
-        M5.Lcd.fillRect(60, 100, 200, 40, TFT_BLACK);
-        M5.Lcd.drawRect(60, 100, 200, 40, newState ? TFT_GREEN : TFT_RED);
-        M5.Lcd.setFont(&fonts::lgfxJapanGothic_16);
-        M5.Lcd.setTextColor(newState ? TFT_GREEN : TFT_RED);
-        M5.Lcd.setCursor(70, 115);
-        M5.Lcd.printf("TICKER %s", newState ? "ENABLED" : "DISABLED");
-        M5.Lcd.setTextColor(TFT_WHITE);
-        playBeep(100, newState ? 1000 : 800);
-        
-        need_full_redraw = true;
-        
-        // 非ブロッキング表示（1秒後に消去）
-        recovery_display_start = millis();
-        recovery_display_active = true;
-      }
-    } else if (!M5.BtnA.isPressed() && !M5.BtnB.isPressed()) {
-      combo_handled = false;  // Reset when both buttons are released
-    }
-    
-    if (M5.BtnA.wasPressed() && !M5.BtnB.isPressed()) {
+    if (M5.BtnA.wasPressed()) {
       // セオドア提言：緊急時の自動復旧機能
       if (emergency_active && auto_recovery_available) {
         // 自動復旧実行
@@ -1969,11 +1787,7 @@ FirePower calculateRecommendedFire() {
 
 void playBeep(int duration_ms, int frequency) {
   // M5Stackのスピーカーでビープ音を鳴らす
-#if USE_MODULAR_MELODY
-  MELODY_PLAYER->playBeep(duration_ms, frequency);
-#else
   M5.Speaker.tone(frequency, duration_ms);
-#endif
 }
 
 void playStageChangeBeep() {
@@ -2406,9 +2220,6 @@ void loop() {
 
       // Send BLE data
       sendBLEData();
-      
-      // Update ticker system information periodically
-      updateTickerSystemInfoWrapper();
 
       drawCurrentValue();
       
@@ -2437,9 +2248,6 @@ void loop() {
       M5.Lcd.printf("KMeter Err: %d", km_err);
     }
   }
-  
-  // Update ticker footer every loop iteration for smooth scrolling
-  updateTickerFooterWrapper();
 }
 void handleNonBlockingBeeps() {
   // Handle stage change beeps
@@ -2475,7 +2283,7 @@ void handleNonBlockingBeeps() {
   }
   
   // セオドア提言：メロディの非ブロッキング更新
-  updateMelodyWrapper();
+  updateMelody();
 }// 次段階進行に必要な鍵温度を返す（初心者向け明確化）
 float getNextStageKeyTemp(RoastStage stage, RoastLevel level) {
   switch(stage) {
@@ -2516,7 +2324,6 @@ float getNextStageKeyTemp(RoastStage stage, RoastLevel level) {
 /**
  * セオドア提言：完全非ブロッキングメロディ再生
  */
-#if !USE_MODULAR_MELODY
 void playMelody(const Melody& melody_pgm) {
   if (melody_active) return;  // 既に再生中の場合は無視
   
@@ -2567,7 +2374,6 @@ void updateMelody() {
     melody_note_start = now;
   }
 }
-#endif
 
 /**
  * フッター領域の統一描画（画面下部のボタン指示）
@@ -2580,108 +2386,3 @@ void drawFooter(const char* instructions) {
   M5.Lcd.setCursor(5, footer_y + 4);
   M5.Lcd.printf("%s", instructions);
 }
-
-/**
- * ティッカーフッター：メッセージ追加
- */
-#if !USE_MODULAR_TICKER
-void addTickerMessage(const char* format, ...) {
-  if (!ticker_enabled) return;
-  
-  char buffer[128];
-  va_list args;
-  va_start(args, format);
-  vsnprintf(buffer, sizeof(buffer), format, args);
-  va_end(args);
-  
-  // 既存メッセージと重複チェック
-  for (int i = 0; i < ticker_message_count; i++) {
-    if (strcmp(ticker_messages[i].text, buffer) == 0) {
-      return; // 重複メッセージは追加しない
-    }
-  }
-  
-  // メッセージ追加（リングバッファ形式）
-  int index = ticker_message_count % TICKER_MAX_MESSAGES;
-  strncpy(ticker_messages[index].text, buffer, sizeof(ticker_messages[index].text) - 1);
-  ticker_messages[index].added_time = millis();
-  
-  if (ticker_message_count < TICKER_MAX_MESSAGES) {
-    ticker_message_count++;
-  }
-}
-#endif
-
-/**
- * ティッカーフッター：システム情報自動収集
- */
-#if !USE_MODULAR_TICKER
-void updateTickerSystemInfo() {
-  if (!ticker_enabled || system_state != STATE_RUNNING) return;
-  
-  static uint32_t last_update = 0;
-  if (millis() - last_update < 10000) return; // 10秒間隔で更新
-  last_update = millis();
-  
-  // 温度情報
-  if (current_temp > 50.0f) {
-    float ror = calculateRoR();
-    addTickerMessage("温度: %.1f°C | RoR: %.1f°C/min", current_temp, ror);
-  }
-  
-  // BLE接続状態
-  if (deviceConnected) {
-    addTickerMessage("BLE接続中");
-  }
-  
-  // 統計情報
-  if (count > 60) {
-    float mean_temp = (count > 0) ? temp_sum / count : 0.0f;
-    addTickerMessage("平均温度: %.1f°C | 最高: %.1f°C", mean_temp, temp_max_recorded);
-  }
-  
-  // 焙煎ステージ情報
-  if (roast_guide_active && current_stage > STAGE_PREHEAT) {
-    const char* stage_names[] = {"予熱", "乾燥", "第一クラック", "展開", "第二クラック", "仕上げ"};
-    addTickerMessage("焙煎ステージ: %s", stage_names[current_stage]);
-  }
-}
-#endif
-
-/**
- * ティッカーフッター：描画更新
- */
-#if !USE_MODULAR_TICKER
-void updateTickerFooter() {
-  if (!ticker_enabled || ticker_message_count == 0) return;
-  
-  uint32_t now = millis();
-  
-  // メッセージ切り替えタイミング
-  if (now - ticker_message_start > TICKER_MESSAGE_DURATION) {
-    ticker_current_index = (ticker_current_index + 1) % ticker_message_count;
-    ticker_scroll_offset = 320; // 右端から開始
-    ticker_message_start = now;
-  }
-  
-  // スクロール更新
-  if (now - ticker_last_scroll > TICKER_SCROLL_SPEED) {
-    ticker_scroll_offset -= 2; // 2ピクセルずつスクロール
-    ticker_last_scroll = now;
-    
-    // メッセージが左端を超えたら右端に戻す
-    const char* current_msg = ticker_messages[ticker_current_index].text;
-    int msg_width = M5.Lcd.textWidth(current_msg);
-    if (ticker_scroll_offset < -msg_width) {
-      ticker_scroll_offset = 320;
-    }
-  }
-  
-  // 描画
-  M5.Lcd.fillRect(0, TICKER_Y_POSITION, 320, 20, TFT_BLACK);
-  M5.Lcd.setFont(&fonts::lgfxJapanGothic_12);
-  M5.Lcd.setTextColor(TFT_CYAN);
-  M5.Lcd.setCursor(ticker_scroll_offset, TICKER_Y_POSITION + 4);
-  M5.Lcd.printf("%s", ticker_messages[ticker_current_index].text);
-}
-#endif

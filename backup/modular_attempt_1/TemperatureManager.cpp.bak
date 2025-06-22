@@ -1,0 +1,123 @@
+#include "TemperatureManager.h"
+
+TemperatureManager::TemperatureManager() {
+  // バッファ初期化
+  for (int i = 0; i < BUF_SIZE; i++) {
+    buf[i] = 0;
+  }
+}
+
+TemperatureManager::~TemperatureManager() {
+  // デストラクタ
+}
+
+bool TemperatureManager::begin(M5UnitKmeterISO* kmeter_instance) {
+  kmeter = kmeter_instance;
+  
+  // 非ブロッキング初期化（セオドア提言：スタートアップも非ブロッキング化）
+  if (!kmeter->begin(&Wire, KM_ADDR, KM_SDA, KM_SCL, I2C_FREQ)) {
+    M5_LOGE("KMeterISO not found…再試行中");
+    init_waiting = true;
+    init_retry_timer = millis();
+    return false;
+  }
+  
+  init_waiting = false;
+  return true;
+}
+
+void TemperatureManager::handleInitialization() {
+  // セオドア提言：完全非ブロッキング初期化リトライ
+  if (init_waiting && millis() - init_retry_timer >= 500) {
+    if (kmeter->begin(&Wire, KM_ADDR, KM_SDA, KM_SCL, I2C_FREQ)) {
+      M5_LOGI("KMeterISO initialization successful!");
+      init_waiting = false;
+    } else {
+      M5_LOGE("KMeterISO still not found…再試行");
+      init_retry_timer = millis(); // Reset timer for next retry
+    }
+  }
+}
+
+void TemperatureManager::update() {
+  if (init_waiting) return; // 初期化中は更新しない
+  
+  km_err = kmeter->getReadyStatus();
+  if (km_err == 0) {
+    current_temp = kmeter->getCelsiusTempValue() / 100.0f;
+    
+    // 統計更新
+    updateStatistics(current_temp);
+    
+    // バッファに保存
+    setTempToBuffer(head, current_temp);
+    head = (head + 1) % BUF_SIZE;
+    if (count < BUF_SIZE) ++count;
+    
+    // RoR計算
+    calculateRoR();
+  }
+}
+
+void TemperatureManager::updateStatistics(float temp) {
+  if (temp < temp_min_recorded) temp_min_recorded = temp;
+  if (temp > temp_max_recorded) temp_max_recorded = temp;
+  temp_sum += temp;
+}
+
+void TemperatureManager::calculateRoR() {
+  // 60秒前の温度と比較してRoR計算
+  if (count >= 60) {
+    int idx_60s_ago = (head - 60 + BUF_SIZE) % BUF_SIZE;
+    float temp_60s_ago = getTempFromBuffer(idx_60s_ago);
+    current_ror = current_temp - temp_60s_ago; // °C/min
+  }
+  
+  // 15秒前の温度と比較して短期RoR計算
+  if (count >= 15) {
+    int idx_15s_ago = (head - 15 + BUF_SIZE) % BUF_SIZE;
+    float temp_15s_ago = getTempFromBuffer(idx_15s_ago);
+    current_ror_15s = (current_temp - temp_15s_ago) * 4.0f; // 15秒→60秒換算
+  }
+}
+
+float TemperatureManager::getAverageTemp() const {
+  if (count == 0) return 0.0f;
+  return temp_sum / count;
+}
+
+void TemperatureManager::clearData() {
+  head = 0;
+  count = 0;
+  temp_min_recorded = 999.0f;
+  temp_max_recorded = -999.0f;
+  temp_sum = 0.0f;
+  current_ror = 0.0f;
+  current_ror_15s = 0.0f;
+  
+  for (int i = 0; i < BUF_SIZE; i++) {
+    buf[i] = 0;
+  }
+}
+
+void TemperatureManager::setTempToBuffer(uint16_t index, float temp) {
+  buf[index] = (int16_t)(temp * 10.0f); // 0.1°C単位で格納
+}
+
+float TemperatureManager::getTempFromBuffer(int index) const {
+  if (index < 0 || index >= BUF_SIZE) return 0.0f;
+  return buf[index] / 10.0f; // 0.1°C単位から°Cに変換
+}
+
+// セオドア提言：温度予測システム
+float TemperatureManager::predictTemperature(int seconds_ahead) const {
+  if (count < 60) return current_temp; // データ不足
+  
+  // 直近の温度変化傾向から予測
+  float trend = current_ror / 60.0f; // °C/秒に変換
+  return current_temp + (trend * seconds_ahead);
+}
+
+bool TemperatureManager::isTemperatureStable(float threshold) const {
+  return abs(current_ror_15s) < threshold;
+}

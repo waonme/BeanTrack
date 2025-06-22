@@ -1,0 +1,197 @@
+#include "SafetySystem.h"
+
+SafetySystem::SafetySystem() {
+  // コンストラクタ
+}
+
+SafetySystem::~SafetySystem() {
+  // デストラクタ
+}
+
+void SafetySystem::begin(TemperatureManager* temp_mgr) {
+  temp_manager = temp_mgr;
+}
+
+void SafetySystem::update() {
+  if (!temp_manager) return;
+  
+  updateEmergencySystem();
+  updateAutoRecovery();
+  handleEmergencyBeeps();
+}
+
+void SafetySystem::updateEmergencySystem() {
+  float current_temp = temp_manager->getCurrentTemp();
+  
+  // 緊急温度チェック
+  if (current_temp >= current_danger_temp && !emergency_active) {
+    triggerEmergency();
+  }
+  
+  // 重要温度警告（危険温度の90%）
+  float warning_temp = current_danger_temp * 0.9f;
+  if (current_temp >= warning_temp && !critical_temp_warning_active) {
+    critical_temp_warning_active = true;
+    critical_temp_warning_start = millis();
+  } else if (current_temp < warning_temp - 5.0f) {
+    critical_temp_warning_active = false;
+  }
+  
+  // 緊急警告の終息処理
+  if (emergency_active && emergency_beep_count >= MAX_EMERGENCY_BEEPS) {
+    emergency_active = false;
+  }
+}
+
+void SafetySystem::updateAutoRecovery() {
+  if (!emergency_active) {
+    auto_recovery_available = false;
+    recovery_dialog_active = false;
+    return;
+  }
+  
+  float current_temp = temp_manager->getCurrentTemp();
+  float current_ror = temp_manager->getCurrentRoR();
+  
+  // セオドア提言：改善された自動復旧システム（追加安全条件）
+  if (current_temp < current_danger_temp - 10.0f) {
+    bool ror_safe = (current_ror < 0);  // RoRがマイナス（冷却中）
+    bool temp_stable = (abs(current_ror) < 5.0f);  // RoRが±5°C/min以内で安定
+    bool sufficient_cooldown = (current_temp < current_danger_temp - 15.0f);  // 15°C以上冷却
+    
+    // より厳密な安全条件チェック
+    bool all_conditions_safe = ror_safe && (temp_stable || sufficient_cooldown);
+    
+    if (all_conditions_safe && !auto_recovery_available) {
+      auto_recovery_available = true;
+      recovery_dialog_start = millis();
+      recovery_dialog_active = true;
+    }
+    
+    if (auto_recovery_available && recovery_dialog_active) {
+      drawRecoveryDialog();
+      
+      // 5秒経過で自動的にダイアログを非表示
+      if (millis() - recovery_dialog_start > 5000) {
+        recovery_dialog_active = false;
+      }
+      
+      // セオドア提言：30秒経過で安全のため自動復旧オプションを無効化
+      if (millis() - recovery_dialog_start > 30000) {
+        auto_recovery_available = false;
+        recovery_dialog_active = false;
+      }
+    } else if (auto_recovery_available && !recovery_dialog_active) {
+      // 簡易表示
+      M5.Lcd.fillRect(0, 150, 320, 30, TFT_GREEN);
+      M5.Lcd.setTextColor(TFT_BLACK, TFT_GREEN);
+      M5.Lcd.setCursor(40, 160);
+      M5.Lcd.printf("SAFE - [A]Auto Reset [C]Manual Reset");
+      M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+    }
+  } else {
+    auto_recovery_available = false;
+    recovery_dialog_active = false;
+  }
+}
+
+void SafetySystem::drawRecoveryDialog() {
+  float current_temp = temp_manager->getCurrentTemp();
+  float current_ror = temp_manager->getCurrentRoR();
+  
+  // 自動復旧提案ダイアログ（セオドア提言：改良版 - 詳細条件表示・拡張安全チェック）
+  M5.Lcd.fillRect(25, 105, 270, 125, TFT_DARKGREEN);
+  M5.Lcd.drawRect(25, 105, 270, 125, TFT_GREEN);
+  M5.Lcd.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+  M5.Lcd.setFont(&fonts::lgfxJapanGothic_12);
+  M5.Lcd.setCursor(35, 115);
+  M5.Lcd.printf("INTELLIGENT RECOVERY READY:");
+  M5.Lcd.setCursor(35, 130);
+  M5.Lcd.printf("Temp: %.1f°C (Safe: <%.0f°C)", current_temp, current_danger_temp - 10);
+  M5.Lcd.setCursor(35, 145);
+  M5.Lcd.printf("RoR: %.1f°C/min (Cooling)", current_ror);
+  M5.Lcd.setCursor(35, 160);
+  M5.Lcd.printf("%s", (abs(current_ror) < 5.0f) ? "Temperature Stable" : "Cool Down Active");
+  M5.Lcd.setCursor(35, 180);
+  M5.Lcd.printf("System Ready for Safe Recovery");
+  M5.Lcd.setCursor(35, 205);
+  M5.Lcd.printf("[A] Auto Reset [C] Manual Control");
+  M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+}
+
+void SafetySystem::handleRecoveryDisplay() {
+  // 非ブロッキング復旧成功表示処理
+  if (recovery_display_active && millis() - recovery_display_start >= 1000) {
+    M5.Lcd.fillScreen(TFT_BLACK);
+    recovery_display_active = false;
+  }
+}
+
+void SafetySystem::triggerEmergency() {
+  emergency_active = true;
+  emergency_beep_active = true;
+  emergency_beep_start = millis();
+  emergency_beep_count = 0;
+  
+  M5_LOGE("EMERGENCY: Temperature %.1f°C exceeds danger level %.1f°C", 
+          temp_manager->getCurrentTemp(), current_danger_temp);
+}
+
+void SafetySystem::executeAutoRecovery() {
+  // 自動復旧実行
+  emergency_active = false;
+  emergency_beep_count = 0;
+  auto_recovery_available = false;
+  recovery_dialog_active = false;
+  
+  // 復旧成功メッセージ（非ブロッキング表示）
+  M5.Lcd.fillScreen(TFT_BLACK);
+  M5.Lcd.setFont(&fonts::lgfxJapanGothic_16);
+  M5.Lcd.setTextColor(TFT_GREEN);
+  M5.Lcd.setCursor(80, 120);
+  M5.Lcd.printf("AUTO RECOVERY SUCCESS");
+  M5.Lcd.setTextColor(TFT_WHITE);
+  recovery_display_start = millis();
+  recovery_display_active = true;
+}
+
+void SafetySystem::resetEmergency() {
+  emergency_active = false;
+  emergency_beep_active = false;
+  emergency_beep_count = 0;
+  auto_recovery_available = false;
+  recovery_dialog_active = false;
+}
+
+bool SafetySystem::checkSafetyConditions() const {
+  return isTemperatureSafe() && isRoRSafe() && isStable();
+}
+
+bool SafetySystem::isTemperatureSafe() const {
+  return temp_manager->getCurrentTemp() < current_danger_temp - 10.0f;
+}
+
+bool SafetySystem::isRoRSafe() const {
+  return temp_manager->getCurrentRoR() < 0; // 冷却中
+}
+
+bool SafetySystem::isStable() const {
+  float ror = temp_manager->getCurrentRoR();
+  return abs(ror) < 5.0f || temp_manager->getCurrentTemp() < current_danger_temp - 15.0f;
+}
+
+void SafetySystem::handleEmergencyBeeps() {
+  if (emergency_beep_active && millis() - emergency_beep_start >= EMERGENCY_BEEP_INTERVAL) {
+    if (emergency_beep_count < MAX_EMERGENCY_BEEPS) {
+      M5.Speaker.tone(880, 200); // 高音警告
+      emergency_beep_count++;
+      emergency_beep_start = millis();
+    } else {
+      emergency_beep_active = false;
+    }
+  }
+}
+
+bool SafetySystem::evaluateRecoveryConditions() const {
+  return checkSafetyConditions();
+}

@@ -1,0 +1,150 @@
+#include "MelodyPlayer.h"
+
+// セオドア提言：メロディもPROGMEMで最適化
+const Melody PROGMEM MELODY_STAGE_CHANGE = {{262, 294, 330, 349, 392, 440, 494, 523}, 150};  // C-D-E-F-G-A-B-C上昇
+const Melody PROGMEM MELODY_FIRST_CRACK = {{523, 494, 440, 392, 349, 330, 294, 262}, 120};    // C-B-A-G-F-E-D-C下降
+const Melody PROGMEM MELODY_EMERGENCY = {{880, 831, 784, 740, 698, 659, 622, 587}, 100};      // 高音から滑落
+const Melody PROGMEM MELODY_COMPLETION = {{392, 523, 392, 523, 392, 523, 659, 523}, 200};    // G-C完成旋律
+
+MelodyPlayer::MelodyPlayer() {
+  // コンストラクタ
+}
+
+MelodyPlayer::~MelodyPlayer() {
+  // デストラクタ
+}
+
+void MelodyPlayer::begin() {
+  // 初期化処理
+  stopMelody();
+}
+
+void MelodyPlayer::update() {
+  updateMelody();
+  updateCriticalBeep();
+  updateStageBeep();
+  updateSingleBeep();
+}
+
+/**
+ * セオドア提言：完全非ブロッキングメロディ再生
+ */
+void MelodyPlayer::playMelody(const Melody& melody_pgm) {
+  if (melody_active) return; // 既に再生中
+  
+  // PROGMEMからメロディデータを読み込み
+  Melody melody;
+  memcpy_P(&melody, &melody_pgm, sizeof(Melody));
+  
+  // メロディデータをコピー
+  for (int i = 0; i < 8; i++) {
+    melody_notes[i] = melody.notes[i];
+  }
+  melody_duration = melody.duration_ms;
+  
+  // 再生開始
+  melody_active = true;
+  melody_note_index = 0;
+  melody_start = millis();
+  melody_note_start = millis();
+  
+  // 最初の音を再生
+  if (melody_notes[0] > 0) {
+    M5.Speaker.tone(melody_notes[0], melody_duration);
+  }
+}
+
+/**
+ * メロディの非ブロッキング更新処理
+ */
+void MelodyPlayer::updateMelody() {
+  if (!melody_active) return;
+  
+  uint32_t now = millis();
+  uint32_t note_elapsed = now - melody_note_start;
+  
+  // 現在の音符の再生時間終了チェック
+  if (note_elapsed >= melody_duration + 50) {  // 50msの間隔を設ける
+    melody_note_index++;
+    
+    if (melody_note_index >= 8 || melody_notes[melody_note_index] <= 0) {
+      // メロディ終了
+      melody_active = false;
+      M5.Speaker.stop();
+      return;
+    }
+    
+    // 次の音符を再生
+    M5.Speaker.tone(melody_notes[melody_note_index], melody_duration);
+    melody_note_start = now;
+  }
+}
+
+void MelodyPlayer::stopMelody() {
+  melody_active = false;
+  M5.Speaker.stop();
+}
+
+void MelodyPlayer::playCriticalBeep() {
+  if (!critical_beep_active) {
+    critical_beep_active = true;
+    critical_beep_start = millis();
+    critical_beep_count = 0;
+  }
+}
+
+void MelodyPlayer::updateCriticalBeep() {
+  if (critical_beep_active && millis() - critical_beep_start >= CRITICAL_BEEP_INTERVAL) {
+    if (critical_beep_count < MAX_CRITICAL_BEEPS) {
+      M5.Speaker.tone(1000, 150);
+      critical_beep_count++;
+      critical_beep_start = millis();
+    } else {
+      critical_beep_active = false;
+    }
+  }
+}
+
+void MelodyPlayer::playStageChangeBeep() {
+  if (!stage_beep_active) {
+    stage_beep_active = true;
+    stage_beep_start = millis();
+    stage_beep_index = 0;
+  }
+}
+
+void MelodyPlayer::updateStageBeep() {
+  if (stage_beep_active && millis() - stage_beep_start >= STAGE_BEEP_INTERVAL) {
+    int stage_beep_frequencies[3] = {1000, 1200, 1500};
+    int stage_beep_durations[3] = {200, 200, 300};
+    
+    if (stage_beep_index < 3) {
+      M5.Speaker.tone(stage_beep_frequencies[stage_beep_index], stage_beep_durations[stage_beep_index]);
+      stage_beep_index++;
+      stage_beep_start = millis();
+    } else {
+      stage_beep_active = false;
+    }
+  }
+}
+
+void MelodyPlayer::playBeep(int frequency, int duration) {
+  if (!single_beep_active) {
+    single_beep_active = true;
+    single_beep_start = millis();
+    single_beep_freq = frequency;
+    single_beep_duration = duration;
+    M5.Speaker.tone(frequency, duration);
+  }
+}
+
+void MelodyPlayer::updateSingleBeep() {
+  if (single_beep_active && millis() - single_beep_start >= single_beep_duration) {
+    single_beep_active = false;
+    M5.Speaker.stop();
+  }
+}
+
+bool MelodyPlayer::isAnyBeepActive() const {
+  return melody_active || critical_beep_active || stage_beep_active || single_beep_active;
+}

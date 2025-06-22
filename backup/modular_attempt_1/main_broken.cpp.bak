@@ -1,0 +1,251 @@
+/**
+ * セオドア提言実装：モジュラーアーキテクチャによるコーヒー焙煎アシスタント
+ * 
+ * Architecture:
+ * - TemperatureManager: 温度測定・RoR計算・統計管理
+ * - SafetySystem: 緊急停止・自動復旧・安全監視
+ * - MelodyPlayer: 非ブロッキング音楽・警告音再生
+ * - BLEManager: Bluetooth通信・差分パケット送信最適化
+ * - DisplayManager: UI描画・モード管理 (TODO)
+ * - RoastGuide: 焙煎ガイド・ステージ管理 (TODO)
+ */
+
+#include "Config.h"
+#include "TemperatureManager.h"
+#include "SafetySystem.h"
+#include "MelodyPlayer.h"
+#include "BLEManager.h"
+
+// Hardware instances
+M5UnitKmeterISO kmeter;
+
+// System managers
+TemperatureManager temp_manager;
+SafetySystem safety_system;
+MelodyPlayer melody_player;
+BLEManager ble_manager;
+
+// System state
+SystemState system_state = STATE_STANDBY;
+DisplayMode display_mode = MODE_GRAPH;
+uint32_t next_tick = 0;
+
+// TODO: これらもクラス化する予定
+bool need_full_redraw = true;
+RoastLevel selected_roast_level = ROAST_MEDIUM;
+bool roast_guide_active = false;
+
+// 非ブロッキング描画制御
+uint32_t last_display_update = 0;
+constexpr uint32_t DISPLAY_UPDATE_INTERVAL = 100; // 10fps更新
+
+// 関数宣言
+void handleButtons();
+void drawInitialScreen();
+void handleStandbyDisplay();
+void updateDisplay();
+
+void setup() {
+  M5.begin();
+  M5.Lcd.setBrightness(LCD_BRIGHTNESS);
+  
+  // I2C明示的初期化（M5Unifiedの実装変更に対応）
+  Wire.begin(KM_SDA, KM_SCL, I2C_FREQ);
+  
+  // Initialize all managers
+  temp_manager.begin(&kmeter);
+  safety_system.begin(&temp_manager);
+  melody_player.begin();
+  ble_manager.begin();
+  
+  // Configure BLE manager dependencies
+  ble_manager.setTemperatureManager(&temp_manager);
+  ble_manager.setSystemState(&system_state);
+  ble_manager.setDisplayMode(&display_mode);
+  ble_manager.setRoastGuideInfo(&roast_guide_active, &selected_roast_level);
+  
+  // Initial screen setup
+  M5.Lcd.fillScreen(TFT_BLACK);
+  M5.Lcd.setFont(&fonts::lgfxJapanGothic_16);
+  M5.Lcd.setTextColor(TFT_WHITE);
+  
+  drawInitialScreen();
+  
+  M5_LOGI("Coffee Roasting Assistant started with modular architecture!");
+}
+
+void loop() {
+  M5.update();
+  
+  // Handle all non-blocking systems
+  temp_manager.handleInitialization();
+  
+  handleButtons();
+  
+  // Update all managers
+  temp_manager.update();
+  safety_system.update();
+  safety_system.handleRecoveryDisplay();
+  melody_player.update();
+  ble_manager.update();
+  
+  if (system_state == STATE_STANDBY) {
+    // In standby mode, just handle buttons and minimal updates
+    handleStandbyDisplay();
+    return;
+  }
+
+  // Main temperature measurement loop (1 second interval)
+  if (millis() >= next_tick) {
+    next_tick += PERIOD_MS;
+    
+    if (temp_manager.isInitialized()) {
+      // Temperature manager handles all measurements internally
+      // No additional processing needed here
+    }
+  }
+  
+  // Non-blocking display updates (10fps)
+  if (millis() - last_display_update >= DISPLAY_UPDATE_INTERVAL) {
+    updateDisplay();
+    last_display_update = millis();
+  }
+}
+
+void handleButtons() {
+  // Handle Button A and B only when running
+  if (system_state == STATE_RUNNING) {
+    if (M5.BtnA.wasPressed()) {
+      // セオドア提言：緊急時の自動復旧機能
+      if (safety_system.isEmergencyActive() && safety_system.isAutoRecoveryAvailable()) {
+        // 自動復旧実行
+        safety_system.executeAutoRecovery();
+        melody_player.playBeep(300, 1000);
+        need_full_redraw = true;
+      } else {
+        // 通常のモード切り替え
+        display_mode = (DisplayMode)((display_mode + 1) % MODE_COUNT);
+        need_full_redraw = true;
+        M5.Lcd.fillRect(0, GRAPH_Y0, 320, 240 - GRAPH_Y0, TFT_BLACK);
+      }
+    }
+    
+    // Handle Button B press and long press
+    if (M5.BtnB.isPressed()) {
+      // TODO: ButtonクラスやInputManagerクラスに移動予定
+      // 現在は簡易実装
+      if (display_mode == MODE_GUIDE) {
+        selected_roast_level = (RoastLevel)((selected_roast_level + 1) % ROAST_COUNT);
+        need_full_redraw = true;
+      }
+    }
+    
+    // Handle Button C for start/stop and data clear
+    if (M5.BtnC.wasPressed()) {
+      if (safety_system.isEmergencyActive()) {
+        // 手動リセット
+        safety_system.resetEmergency();
+        melody_player.playBeep(1000, 500);
+        need_full_redraw = true;
+      } else if (display_mode == MODE_GUIDE) {
+        roast_guide_active = !roast_guide_active;
+        melody_player.playBeep(roast_guide_active ? 1200 : 800, 300);
+        need_full_redraw = true;
+      }
+    }
+    
+    if (M5.BtnC.pressedFor(2000)) {
+      // Data clear with long press
+      temp_manager.clearData();
+      safety_system.resetEmergency();
+      melody_player.playBeep(400, 1000);
+      need_full_redraw = true;
+      
+      M5.Lcd.fillScreen(TFT_BLACK);
+      M5.Lcd.setTextColor(TFT_YELLOW);
+      M5.Lcd.setCursor(80, 120);
+      M5.Lcd.printf("*** DATA CLEARED ***");
+      M5.Lcd.setTextColor(TFT_WHITE);
+      delay(1000);  // TODO: 非ブロッキング化予定
+      need_full_redraw = true;
+    }
+  }
+  
+  // Button C for start/stop in any mode
+  if (M5.BtnC.wasPressed() && !safety_system.isEmergencyActive()) {
+    if (system_state == STATE_STANDBY) {
+      system_state = STATE_RUNNING;
+      melody_player.playBeep(1000, 300);
+      need_full_redraw = true;
+    } else if (display_mode != MODE_GUIDE) {
+      system_state = STATE_STANDBY;
+      melody_player.playBeep(800, 300);
+      need_full_redraw = true;
+    }
+  }
+}
+
+void drawInitialScreen() {
+  M5.Lcd.fillScreen(TFT_BLACK);
+  M5.Lcd.setTextColor(TFT_GREEN);
+  M5.Lcd.setCursor(50, 50);
+  M5.Lcd.printf("Coffee Roasting Assistant");
+  M5.Lcd.setTextColor(TFT_CYAN);
+  M5.Lcd.setCursor(80, 80);
+  M5.Lcd.printf("Modular Architecture");
+  M5.Lcd.setTextColor(TFT_WHITE);
+  M5.Lcd.setCursor(60, 120);
+  M5.Lcd.printf("Theodore's Optimization");
+  M5.Lcd.setCursor(100, 150);
+  M5.Lcd.printf("[C] Start");
+  
+  // System status
+  M5.Lcd.setTextColor(TFT_YELLOW);
+  M5.Lcd.setCursor(10, 200);
+  M5.Lcd.printf("Temp: %s | BLE: %s", 
+                temp_manager.isInitialized() ? "OK" : "Init...",
+                ble_manager.isConnected() ? "Connected" : "Waiting");
+}
+
+void handleStandbyDisplay() {
+  static uint32_t last_standby_update = 0;
+  if (millis() - last_standby_update >= 1000) {
+    drawInitialScreen();
+    last_standby_update = millis();
+  }
+}
+
+void updateDisplay() {
+  if (!need_full_redraw && !temp_manager.isInitialized()) return;
+  
+  // TODO: DisplayManagerクラスに移動予定
+  // 現在は基本的な表示のみ実装
+  
+  if (need_full_redraw) {
+    M5.Lcd.fillScreen(TFT_BLACK);
+    need_full_redraw = false;
+  }
+  
+  // Header
+  M5.Lcd.setTextColor(TFT_WHITE);
+  M5.Lcd.setCursor(10, 10);
+  M5.Lcd.printf("Temp: %.1f°C | RoR: %.1f°C/min", 
+                temp_manager.getCurrentTemp(), 
+                temp_manager.getCurrentRoR());
+  
+  // Emergency overlay (highest priority)
+  if (safety_system.isEmergencyActive()) {
+    M5.Lcd.fillRect(0, 40, 320, 40, TFT_RED);
+    M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
+    M5.Lcd.setCursor(50, 50);
+    M5.Lcd.printf("EMERGENCY: %.1f°C", temp_manager.getCurrentTemp());
+    M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+  }
+  
+  // System status
+  M5.Lcd.setCursor(10, 220);
+  M5.Lcd.printf("State: %s | Mode: %d | Data: %d", 
+                (system_state == STATE_RUNNING) ? "RUN" : "STANDBY",
+                display_mode,
+                temp_manager.getDataCount());
+}

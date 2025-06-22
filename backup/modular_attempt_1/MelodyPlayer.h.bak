@@ -1,0 +1,59 @@
+#pragma once
+
+#include "Config.h"
+
+class MelodyPlayer {
+private:
+  // セオドア提言：非ブロッキングメロディシステム
+  bool melody_active = false;
+  uint32_t melody_start = 0;
+  int melody_note_index = 0;
+  int melody_notes[8];
+  int melody_duration = 0;
+  uint32_t melody_note_start = 0;
+  
+  // Non-blocking critical warning beeps
+  bool critical_beep_active = false;
+  uint32_t critical_beep_start = 0;
+  int critical_beep_count = 0;
+  
+  // Non-blocking stage change beeps
+  bool stage_beep_active = false;
+  uint32_t stage_beep_start = 0;
+  int stage_beep_index = 0;
+  
+  // 単発ビープ
+  bool single_beep_active = false;
+  uint32_t single_beep_start = 0;
+  int single_beep_freq = 0;
+  int single_beep_duration = 0;
+
+public:
+  MelodyPlayer();
+  ~MelodyPlayer();
+  
+  // 初期化
+  void begin();
+  
+  // メインループ処理
+  void update();
+  
+  // メロディ再生
+  void playMelody(const Melody& melody_pgm);
+  void stopMelody();
+  bool isMelodyPlaying() const { return melody_active; }
+  
+  // 警告音再生
+  void playCriticalBeep();
+  void playStageChangeBeep();
+  void playBeep(int frequency, int duration);
+  
+  // 状態チェック
+  bool isAnyBeepActive() const;
+  
+private:
+  void updateMelody();
+  void updateCriticalBeep();
+  void updateStageBeep();
+  void updateSingleBeep();
+};

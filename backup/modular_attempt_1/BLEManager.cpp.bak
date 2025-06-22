@@ -1,0 +1,147 @@
+#include "BLEManager.h"
+
+// グローバル参照（コールバック用）
+BLEManager* g_ble_manager = nullptr;
+
+void MyServerCallbacks::onConnect(BLEServer* pServer) {
+  if (g_ble_manager) {
+    g_ble_manager->setConnected(true);
+  }
+}
+
+void MyServerCallbacks::onDisconnect(BLEServer* pServer) {
+  if (g_ble_manager) {
+    g_ble_manager->setConnected(false);
+  }
+}
+
+BLEManager::BLEManager() {
+  g_ble_manager = this;
+}
+
+BLEManager::~BLEManager() {
+  g_ble_manager = nullptr;
+}
+
+bool BLEManager::begin() {
+  // Initialize BLE
+  BLEDevice::init("M5Stack-Thermometer");
+  
+  // Create BLE Server
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  // Create BLE Service
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+
+  // Create BLE Characteristic for TX (server to client)
+  pTxCharacteristic = pService->createCharacteristic(
+                        CHARACTERISTIC_UUID_TX,
+                        BLECharacteristic::PROPERTY_NOTIFY
+                      );
+
+  pTxCharacteristic->addDescriptor(new BLE2902());
+
+  // Create BLE Characteristic for RX (client to server)
+  BLECharacteristic* pRxCharacteristic = pService->createCharacteristic(
+                                          CHARACTERISTIC_UUID_RX,
+                                          BLECharacteristic::PROPERTY_WRITE
+                                        );
+
+  // Start service
+  pService->start();
+
+  // Start advertising
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(false);
+  pAdvertising->setMinPreferred(0x0);
+  BLEDevice::startAdvertising();
+  
+  M5_LOGI("BLE service started, waiting for client connection...");
+  return true;
+}
+
+void BLEManager::update() {
+  handleBLEReconnection();
+  sendBLEData();
+}
+
+void BLEManager::handleBLEReconnection() {
+  // Handle BLE disconnection（非ブロッキング再接続）
+  if (!deviceConnected && oldDeviceConnected && !ble_restart_pending) {
+    ble_restart_timer = millis();
+    ble_restart_pending = true;
+    oldDeviceConnected = deviceConnected;
+  }
+  
+  // 非ブロッキングBLE再接続処理
+  if (ble_restart_pending && millis() - ble_restart_timer >= 300) {
+    pServer->startAdvertising(); // restart advertising
+    M5_LOGI("Start advertising");
+    ble_restart_pending = false;
+  }
+  
+  // Handle BLE connection
+  if (deviceConnected && !oldDeviceConnected) {
+    oldDeviceConnected = deviceConnected;
+  }
+}
+
+void BLEManager::sendBLEData() {
+  uint32_t now = millis();
+  if ((now - last_ble_send) < BLE_SEND_INTERVAL) {
+    return;  // Don't send too frequently
+  }
+  
+  if (!deviceConnected || !temp_manager) {
+    return;  // No client connected or no temperature manager
+  }
+  
+  last_ble_send = now;
+  bool send_full_data = (now - last_full_data_send) >= FULL_DATA_INTERVAL;
+  
+  // セオドア提言：パケットサイズ最適化のため軽量JSONまたはフルJSON
+  StaticJsonDocument<512> doc;
+  
+  // 必須データ（毎秒送信）
+  doc["timestamp"] = now;
+  doc["temperature"] = serialized(String(temp_manager->getCurrentTemp(), 2));
+  doc["ror"] = serialized(String(temp_manager->getCurrentRoR(), 1));
+  doc["state"] = (system_state && *system_state == STATE_RUNNING) ? "running" : "standby";
+  doc["type"] = send_full_data ? "full" : "lite";  // パケットタイプ識別
+  
+  if (send_full_data) {
+    // 15秒間隔でのみ送信する重いデータ
+    if (display_mode) {
+      doc["mode"] = *display_mode;
+    }
+    doc["count"] = temp_manager->getDataCount();
+    
+    // 焙煎ガイドデータ
+    if (roast_guide_active && *roast_guide_active && selected_roast_level) {
+      JsonObject roast = doc.createNestedObject("roast");
+      roast["level"] = getRoastLevelName(*selected_roast_level);
+      // 他の焙煎情報もここに追加可能
+    }
+    
+    // 統計データ
+    if (temp_manager->getDataCount() > 0) {
+      JsonObject stats = doc.createNestedObject("stats");
+      stats["min"] = serialized(String(temp_manager->getMinTemp(), 2));
+      stats["max"] = serialized(String(temp_manager->getMaxTemp(), 2));
+      stats["avg"] = serialized(String(temp_manager->getAverageTemp(), 2));
+    }
+    
+    last_full_data_send = now;
+  }
+  
+  // JSON文字列にシリアライズ
+  static String json_string;
+  json_string = "";
+  serializeJson(doc, json_string);
+  json_string += "\n";
+  
+  pTxCharacteristic->setValue(json_string.c_str());
+  pTxCharacteristic->notify();
+}

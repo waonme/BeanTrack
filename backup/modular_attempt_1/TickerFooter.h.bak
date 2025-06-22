@@ -1,0 +1,79 @@
+#pragma once
+
+#include "Config.h"
+#include "TemperatureManager.h"
+#include "SafetySystem.h"
+#include "BLEManager.h"
+
+class TickerFooter {
+private:
+  // ティッカー表示設定
+  static constexpr int MAX_MESSAGES = 10;
+  static constexpr int MAX_MESSAGE_LENGTH = 80;
+  static constexpr uint32_t SCROLL_INTERVAL = 3000; // 3秒間隔でメッセージ切り替え
+  static constexpr uint32_t CHAR_SCROLL_INTERVAL = 150; // 文字スクロール速度
+  
+  // メッセージ管理
+  String messages[MAX_MESSAGES];
+  int message_count = 0;
+  int current_message_index = 0;
+  
+  // スクロール制御
+  uint32_t last_scroll_time = 0;
+  uint32_t last_char_scroll = 0;
+  int scroll_offset = 0;
+  bool is_scrolling = false;
+  
+  // 表示エリア設定
+  int16_t footer_y = 220;        // フッター位置
+  int16_t footer_height = 20;    // フッター高さ
+  int16_t display_width = 320;   // 表示幅
+  
+  // システム参照
+  TemperatureManager* temp_manager;
+  SafetySystem* safety_system;
+  BLEManager* ble_manager;
+  SystemState* system_state;
+  DisplayMode* display_mode;
+  
+  // 動的情報更新
+  uint32_t last_info_update = 0;
+  constexpr static uint32_t INFO_UPDATE_INTERVAL = 5000; // 5秒間隔で情報更新
+
+public:
+  TickerFooter();
+  ~TickerFooter();
+  
+  // 初期化・設定
+  void begin(TemperatureManager* temp_mgr, SafetySystem* safety_sys, 
+             BLEManager* ble_mgr, SystemState* state, DisplayMode* mode);
+  void setFooterPosition(int16_t y, int16_t height);
+  
+  // メッセージ管理
+  void addMessage(const String& message);
+  void clearMessages();
+  
+  // 自動情報収集
+  void updateSystemInfo();
+  void addTemperatureInfo();
+  void addRoRInfo();
+  void addBLEInfo();
+  void addSystemStatus();
+  void addSafetyStatus();
+  void addStatisticsInfo();
+  
+  // 表示更新
+  void update();
+  void draw();
+  
+  // 設定
+  void setScrollSpeed(uint32_t char_interval, uint32_t message_interval);
+  void enableScrolling(bool enable) { is_scrolling = enable; }
+  
+private:
+  void scrollToNextMessage();
+  void drawCurrentMessage();
+  String formatTemperature(float temp) const;
+  String formatDuration(uint32_t seconds) const;
+  String truncateMessage(const String& msg, int max_chars) const;
+};

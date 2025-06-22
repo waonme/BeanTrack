@@ -1,0 +1,123 @@
+#pragma once
+
+#include <M5Unified.h>
+#include <M5UnitKmeterISO.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+#include <ArduinoJson.h>
+
+// ハードウェア設定
+#define KM_SDA   21
+#define KM_SCL   22
+#define I2C_FREQ 100000L
+#define KM_ADDR  KMETER_DEFAULT_ADDR
+
+// システム定数
+constexpr uint16_t PERIOD_MS   = 1000;       // 1秒周期
+constexpr uint16_t BUF_SIZE    = 900;        // 15分記録
+constexpr float    TEMP_MIN    = 20.0f;      // グラフ下限
+constexpr float    TEMP_MAX    = 270.0f;     // グラフ上限（緊急停止域表示用）
+constexpr float    TEMP_DANGER = 245.0f;     // 危険温度
+constexpr float    TEMP_CRITICAL = 260.0f;   // 緊急停止温度
+
+// UI最適化：レイアウト定数
+constexpr int16_t  HEADER_HEIGHT = 50;      // ヘッダー部分の高さ
+constexpr int16_t  FOOTER_HEIGHT = 20;      // フッター部分の高さ
+constexpr int16_t  GRAPH_X0    = 10;
+constexpr int16_t  GRAPH_Y0    = HEADER_HEIGHT;
+constexpr int16_t  GRAPH_W     = 300;
+constexpr int16_t  GRAPH_H     = 240 - HEADER_HEIGHT - FOOTER_HEIGHT;  // 170px
+
+constexpr uint8_t  LCD_BRIGHTNESS = 1;
+
+// BLE設定
+#define SERVICE_UUID           "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+#define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+
+constexpr uint32_t BLE_SEND_INTERVAL = 1000; // 1秒間隔
+constexpr uint32_t FULL_DATA_INTERVAL = 15000; // 15秒間隔で完全データ送信
+
+// 列挙型定義
+enum DisplayMode {
+  MODE_GRAPH = 0,
+  MODE_STATS = 1,
+  MODE_ROR = 2,
+  MODE_GUIDE = 3,
+  MODE_COUNT = 4
+};
+
+enum SystemState {
+  STATE_STANDBY = 0,
+  STATE_RUNNING = 1
+};
+
+enum RoastLevel {
+  ROAST_LIGHT = 0,        // 浅煎り
+  ROAST_MEDIUM_LIGHT = 1, // 中浅煎り
+  ROAST_MEDIUM = 2,       // 中煎り
+  ROAST_MEDIUM_DARK = 3,  // 中深煎り
+  ROAST_DARK = 4,         // 深煎り
+  ROAST_FRENCH = 5,       // フレンチロースト
+  ROAST_COUNT = 6
+};
+
+enum RoastStage {
+  STAGE_PREHEAT = 0,      // 予熱
+  STAGE_CHARGE = 1,       // 投入
+  STAGE_DRYING = 2,       // 蒸らし・乾燥
+  STAGE_MAILLARD = 3,     // メイラード反応
+  STAGE_FIRST_CRACK = 4,  // 1ハゼ
+  STAGE_DEVELOPMENT = 5,  // 発達段階
+  STAGE_SECOND_CRACK = 6, // 2ハゼ
+  STAGE_FINISH = 7        // 排出
+};
+
+enum FirePower {
+  FIRE_OFF = 0,      // 火力OFF
+  FIRE_VERY_LOW = 1, // 極弱火
+  FIRE_LOW = 2,      // 弱火
+  FIRE_MEDIUM = 3,   // 中火
+  FIRE_HIGH = 4,     // 強火
+  FIRE_MAX = 5       // 最大火力
+};
+
+// 構造体定義
+struct RoastTarget {
+  float temp_min;
+  float temp_max;
+  float ror_min;
+  float ror_max;
+  uint16_t time_min;  // 秒
+  uint16_t time_max;  // 秒
+  const char* advice;
+  FirePower recommended_fire; // 推奨火力
+};
+
+struct Melody {
+  int notes[8];      // 8音のメロディ
+  int duration_ms;   // 各音の長さ
+};
+
+// セオドア提言：メロディもPROGMEMで最適化
+extern const Melody PROGMEM MELODY_STAGE_CHANGE;
+extern const Melody PROGMEM MELODY_FIRST_CRACK;
+extern const Melody PROGMEM MELODY_EMERGENCY;
+extern const Melody PROGMEM MELODY_COMPLETION;
+
+// 警告・ビープ定数
+constexpr uint32_t EMERGENCY_BEEP_INTERVAL = 300; // 300ms間隔
+constexpr int MAX_EMERGENCY_BEEPS = 10;
+constexpr uint32_t STAGE_BEEP_INTERVAL = 300; // 300ms between beeps
+constexpr int MAX_CRITICAL_BEEPS = 3;
+constexpr uint32_t CRITICAL_BEEP_INTERVAL = 250; // 250ms between beeps
+
+// ヒステリシス値
+constexpr float FIRE_HYSTERESIS = 0.5f;  // °C hysteresis for fire power changes
+
+// 関数宣言（各クラスから使用される共通関数）
+const char* getRoastLevelName(RoastLevel level);
+const char* getRoastStageName(RoastStage stage);
+const char* getFirePowerName(FirePower fire);

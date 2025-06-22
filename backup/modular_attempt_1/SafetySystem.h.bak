@@ -1,0 +1,68 @@
+#pragma once
+
+#include "Config.h"
+#include "TemperatureManager.h"
+
+class SafetySystem {
+private:
+  // 緊急システム状態
+  bool emergency_active = false;
+  bool emergency_beep_active = false;
+  uint32_t emergency_beep_start = 0;
+  int emergency_beep_count = 0;
+  
+  // セオドア提言：自動復旧システム
+  bool auto_recovery_available = false;
+  uint32_t recovery_dialog_start = 0;
+  bool recovery_dialog_active = false;
+  
+  // 非ブロッキング復旧成功表示
+  uint32_t recovery_display_start = 0;
+  bool recovery_display_active = false;
+  
+  // 重要温度警告
+  bool critical_temp_warning_active = false;
+  uint32_t critical_temp_warning_start = 0;
+  
+  // 温度管理への参照
+  TemperatureManager* temp_manager;
+  
+  // 動的危険温度（焙煎レベルに応じて）
+  float current_danger_temp = TEMP_DANGER;
+  
+public:
+  SafetySystem();
+  ~SafetySystem();
+  
+  // 初期化
+  void begin(TemperatureManager* temp_mgr);
+  
+  // メインループ処理
+  void update();
+  void handleRecoveryDisplay();
+  
+  // 状態取得
+  bool isEmergencyActive() const { return emergency_active; }
+  bool isAutoRecoveryAvailable() const { return auto_recovery_available; }
+  bool isRecoveryDialogActive() const { return recovery_dialog_active; }
+  bool isRecoveryDisplayActive() const { return recovery_display_active; }
+  
+  // 手動制御
+  void triggerEmergency();
+  void executeAutoRecovery();
+  void resetEmergency();
+  void setDangerTemp(float temp) { current_danger_temp = temp; }
+  
+  // 安全条件チェック
+  bool checkSafetyConditions() const;
+  bool isTemperatureSafe() const;
+  bool isRoRSafe() const;
+  bool isStable() const;
+  
+private:
+  void updateEmergencySystem();
+  void updateAutoRecovery();
+  void drawRecoveryDialog();
+  void handleEmergencyBeeps();
+  bool evaluateRecoveryConditions() const;
+};

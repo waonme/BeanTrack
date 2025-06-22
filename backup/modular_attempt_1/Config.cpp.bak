@@ -1,0 +1,39 @@
+#include "Config.h"
+
+const char* getRoastLevelName(RoastLevel level) {
+  switch(level) {
+    case ROAST_LIGHT: return "Light Roast";
+    case ROAST_MEDIUM_LIGHT: return "Medium-Light Roast";
+    case ROAST_MEDIUM: return "Medium Roast";
+    case ROAST_MEDIUM_DARK: return "Medium-Dark Roast";
+    case ROAST_DARK: return "Dark Roast";
+    case ROAST_FRENCH: return "French Roast";
+    default: return "Unknown";
+  }
+}
+
+const char* getRoastStageName(RoastStage stage) {
+  switch(stage) {
+    case STAGE_PREHEAT: return "Preheat";
+    case STAGE_CHARGE: return "Charge";
+    case STAGE_DRYING: return "Drying";
+    case STAGE_MAILLARD: return "Maillard";
+    case STAGE_FIRST_CRACK: return "1st Crack";
+    case STAGE_DEVELOPMENT: return "Development";
+    case STAGE_SECOND_CRACK: return "2nd Crack";
+    case STAGE_FINISH: return "Finish";
+    default: return "Unknown";
+  }
+}
+
+const char* getFirePowerName(FirePower fire) {
+  switch(fire) {
+    case FIRE_OFF: return "OFF";
+    case FIRE_VERY_LOW: return "Very Low";
+    case FIRE_LOW: return "Low";
+    case FIRE_MEDIUM: return "Medium";
+    case FIRE_HIGH: return "High";
+    case FIRE_MAX: return "Maximum";
+    default: return "Unknown";
+  }
+}
