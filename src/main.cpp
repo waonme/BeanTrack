@@ -7,6 +7,13 @@
 #include <ArduinoJson.h>
 #include <stdarg.h>
 
+// モジュラー化テスト用
+#define USE_MODULAR_MELODY 1  // 1にするとMelodyPlayerクラスを使用
+
+#if USE_MODULAR_MELODY
+#include "Audio/MelodyPlayer.h"
+#endif
+
 #define KM_SDA   21
 #define KM_SCL   22
 #define I2C_FREQ 100000L
@@ -165,12 +172,14 @@ int stage_beep_frequencies[3] = {1000, 1200, 1500};
 int stage_beep_durations[3] = {200, 200, 300};
 
 // セオドア提言：非ブロッキングメロディシステム
+#if !USE_MODULAR_MELODY
 bool melody_active = false;
 uint32_t melody_start = 0;
 int melody_note_index = 0;
 int melody_notes[8];
 int melody_duration = 0;
 uint32_t melody_note_start = 0;
+#endif
 
 // 非ブロッキング初期化待機
 static uint32_t init_retry_timer = 0;
@@ -218,10 +227,14 @@ uint32_t ticker_message_start = 0;
 bool ticker_enabled = false;
 
 // Melody system for elegant notifications
+#if !USE_MODULAR_MELODY
 struct Melody {
   int notes[8];      // 8音のメロディ
   int duration_ms;   // 各音の長さ
 };
+#else
+using Melody = MelodyPlayer::Melody;
+#endif
 
 // セオドア提言：メロディもPROGMEMで最適化
 const Melody PROGMEM MELODY_STAGE_CHANGE = {{262, 294, 330, 349, 392, 440, 494, 523}, 150};  // C-D-E-F-G-A-B-C上昇
@@ -230,8 +243,10 @@ const Melody PROGMEM MELODY_EMERGENCY = {{880, 831, 784, 740, 698, 659, 622, 587
 const Melody PROGMEM MELODY_COMPLETION = {{392, 523, 392, 523, 392, 523, 659, 523}, 200};    // G-C完成旋律
 
 // セオドア提言：関数宣言（非ブロッキング関数群）
+#if !USE_MODULAR_MELODY
 void updateMelody();
 void playMelody(const Melody& melody_pgm);
+#endif
 
 // Temperature prediction for gas burner
 class TemperaturePredictor {
@@ -272,6 +287,24 @@ TemperaturePredictor predictor;
 void addTickerMessage(const char* format, ...);
 void updateTickerSystemInfo();
 void updateTickerFooter();
+
+// モジュラー化対応ラッパー関数
+inline void playMelodyWrapper(const Melody& melody_pgm) {
+#if USE_MODULAR_MELODY
+    MELODY_PLAYER->playMelody(melody_pgm);
+#else
+    playMelody(melody_pgm);
+#endif
+}
+
+inline void updateMelodyWrapper() {
+#if USE_MODULAR_MELODY
+    MELODY_PLAYER->update();
+#else
+    updateMelody();
+#endif
+}
+
 
 // セオドア提言：温度バッファの型変換ヘルパー関数
 inline void setTempToBuffer(uint16_t index, float temp) {
@@ -452,6 +485,11 @@ void setup() {
   // セオドア提言：Sprite初期化（真のスクロール実装）
   graph_sprite.createSprite(GRAPH_W, GRAPH_H);
   sprite_initialized = true;
+
+#if USE_MODULAR_MELODY
+  // MelodyPlayer初期化
+  MELODY_PLAYER->begin();
+#endif
 
   // I2C明示的初期化（M5Unifiedの実装変更に対応）
   Wire.begin(KM_SDA, KM_SCL, I2C_FREQ);
@@ -1848,7 +1886,11 @@ FirePower calculateRecommendedFire() {
 
 void playBeep(int duration_ms, int frequency) {
   // M5Stackのスピーカーでビープ音を鳴らす
+#if USE_MODULAR_MELODY
+  MELODY_PLAYER->playBeep(duration_ms, frequency);
+#else
   M5.Speaker.tone(frequency, duration_ms);
+#endif
 }
 
 void playStageChangeBeep() {
@@ -2350,7 +2392,7 @@ void handleNonBlockingBeeps() {
   }
   
   // セオドア提言：メロディの非ブロッキング更新
-  updateMelody();
+  updateMelodyWrapper();
 }// 次段階進行に必要な鍵温度を返す（初心者向け明確化）
 float getNextStageKeyTemp(RoastStage stage, RoastLevel level) {
   switch(stage) {
@@ -2391,6 +2433,7 @@ float getNextStageKeyTemp(RoastStage stage, RoastLevel level) {
 /**
  * セオドア提言：完全非ブロッキングメロディ再生
  */
+#if !USE_MODULAR_MELODY
 void playMelody(const Melody& melody_pgm) {
   if (melody_active) return;  // 既に再生中の場合は無視
   
@@ -2441,6 +2484,7 @@ void updateMelody() {
     melody_note_start = now;
   }
 }
+#endif
 
 /**
  * フッター領域の統一描画（画面下部のボタン指示）
