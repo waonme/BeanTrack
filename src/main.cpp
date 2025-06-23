@@ -12,6 +12,7 @@
 #define USE_MODULAR_TICKER 1  // 1にするとTickerFooterクラスを使用
 #define USE_MODULAR_STATS 1   // 1にするとTemperatureStatisticsクラスを使用
 #define USE_MODULAR_SAFETY 1  // 1にするとSafetySystemクラスを使用
+#define USE_MODULAR_BLE 1     // 1にするとBLEManagerクラスを使用
 
 #if USE_MODULAR_MELODY
 #include "Audio/MelodyPlayer.h"
@@ -27,6 +28,10 @@
 
 #if USE_MODULAR_SAFETY
 #include "Safety/SafetySystem.h"
+#endif
+
+#if USE_MODULAR_BLE
+#include "BLE/BLEManager.h"
 #endif
 
 #define KM_SDA   21
@@ -113,21 +118,24 @@ int16_t  buf[BUF_SIZE];  // 0.1°C単位で格納（例：25.3°C → 253）
 uint16_t head = 0;
 uint16_t count = 0;
 
+#if !USE_MODULAR_BLE
 // BLE UUIDs for Nordic UART Service
 #define SERVICE_UUID           "6E400001-B5A3-F393-E0A9-E50E24DCCA9E" // UART service UUID
 #define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 
-M5UnitKmeterISO kmeter;
 BLEServer* pServer = NULL;
 BLECharacteristic* pTxCharacteristic;
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
+uint32_t last_ble_send = 0;
+constexpr uint32_t BLE_SEND_INTERVAL = 1000;  // Send data every 1 second
+#endif
+
+M5UnitKmeterISO kmeter;
 uint32_t next_tick = 0;
 uint8_t  km_err    = 0;
 float    current_temp = 0;
-uint32_t last_ble_send = 0;
-constexpr uint32_t BLE_SEND_INTERVAL = 1000;  // Send data every 1 second
 
 DisplayMode display_mode = MODE_GRAPH;
 SystemState system_state = STATE_STANDBY;
@@ -606,6 +614,15 @@ inline void recalculateStatsFromBuffer() {
 #endif
 }
 
+// BLE接続状態ラッパー関数
+inline bool isBLEConnected() {
+#if USE_MODULAR_BLE
+  return BLE_MGR->isConnected();
+#else
+  return deviceConnected;
+#endif
+}
+
 // Ticker wrapper function (needs to be after statistics wrappers)
 inline void updateTickerSystemInfoWrapper() {
 #if USE_MODULAR_TICKER
@@ -622,7 +639,7 @@ inline void updateTickerSystemInfoWrapper() {
             }
             
             // BLE接続状態
-            if (deviceConnected) {
+            if (isBLEConnected()) {
                 TICKER->addMessage("BLE接続中");
             }
             
@@ -705,6 +722,7 @@ inline void setAutoRecoveryAvailable(bool available) {
 #endif
 }
 
+#if !USE_MODULAR_BLE
 // BLE Server callbacks
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
@@ -717,6 +735,7 @@ class MyServerCallbacks: public BLEServerCallbacks {
       M5_LOGI("BLE Client disconnected");
     }
 };
+#endif
 
 void setup() {
   auto cfg = M5.config();
@@ -758,6 +777,46 @@ void setup() {
     return;
   }
 
+#if USE_MODULAR_BLE
+  // BLEManager初期化
+  BLE_MGR->begin("M5Stack-Thermometer");
+  
+  // データ要求コールバック設定
+  BLE_MGR->setDataRequestCallback([](JsonDocument& doc, bool fullData) {
+    // この関数はsendBLEDataの内容を移植
+    if (fullData) {
+      doc["type"] = "full";
+    } else {
+      doc["type"] = "lite";
+    }
+    
+    doc["timestamp"] = millis();
+    doc["temp"] = serialized(String(current_temp, 2));
+    doc["ror"] = serialized(String(current_ror, 2));
+    doc["state"] = system_state;
+    
+    if (fullData) {
+      doc["mode"] = display_mode;
+      doc["count"] = count;
+      
+      if (roast_guide_active) {
+        JsonObject roast = doc["roast"].to<JsonObject>();
+        roast["active"] = true;
+        roast["level"] = getRoastLevelName(selected_roast_level);
+        roast["stage"] = getRoastStageName(current_stage);
+        roast["elapsed"] = getRoastElapsedTime();
+        roast["fire"] = getFirePowerName(current_recommended_fire);
+      }
+      
+      if (count > 0) {
+        JsonObject stats = doc["stats"].to<JsonObject>();
+        stats["min"] = serialized(String(getMinTemp(), 2));
+        stats["max"] = serialized(String(getMaxTemp(), 2));
+        stats["avg"] = serialized(String(getAverageTemp(), 2));
+      }
+    }
+  });
+#else
   // Initialize BLE
   BLEDevice::init("M5Stack-Thermometer");
   
@@ -787,6 +846,7 @@ void setup() {
   BLEDevice::startAdvertising();
   
   M5_LOGI("BLE started - Device name: M5Stack-Thermometer");
+#endif
 
   M5.Lcd.setRotation(1);
   M5.Lcd.setBrightness(LCD_BRIGHTNESS);  // バッテリー寿命延長のため明度を調整
@@ -2471,6 +2531,10 @@ void updateFirePowerRecommendation() {
  * 温度/RoRデータは1秒間隔、統計データは15秒間隔で送信し帯域節約
  */
 void sendBLEData() {
+#if USE_MODULAR_BLE
+  // モジュラーBLEManagerが自動的に処理
+  BLE_MGR->update();
+#else
   uint32_t now = millis();
   if ((now - last_ble_send) < BLE_SEND_INTERVAL) {
     return;  // Don't send too frequently
@@ -2526,6 +2590,7 @@ void sendBLEData() {
   
   pTxCharacteristic->setValue(json_string.c_str());
   pTxCharacteristic->notify();
+#endif
 }
 
 void loop() {
@@ -2551,6 +2616,7 @@ void loop() {
     need_full_redraw = true;
   }
 
+#if !USE_MODULAR_BLE
   // Handle BLE disconnection（非ブロッキング再接続）
   if (!deviceConnected && oldDeviceConnected && !ble_restart_pending) {
     ble_restart_timer = millis();
@@ -2568,6 +2634,7 @@ void loop() {
   if (deviceConnected && !oldDeviceConnected) {
     oldDeviceConnected = deviceConnected;
   }
+#endif
 
   if (system_state == STATE_STANDBY) {
     // In standby mode, just handle buttons
@@ -2836,14 +2903,13 @@ void updateTickerSystemInfo() {
   }
   
   // BLE接続状態
-  if (deviceConnected) {
+  if (isBLEConnected()) {
     addTickerMessage("BLE接続中");
   }
   
   // 統計情報
   if (count > 60) {
-    float mean_temp = (count > 0) ? temp_sum / count : 0.0f;
-    addTickerMessage("平均温度: %.1f°C | 最高: %.1f°C", mean_temp, temp_max_recorded);
+    addTickerMessage("平均温度: %.1f°C | 最高: %.1f°C", getAverageTemp(), getMaxTemp());
   }
   
   // 焙煎ステージ情報
