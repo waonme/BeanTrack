@@ -11,6 +11,7 @@
 #define USE_MODULAR_MELODY 1  // 1にするとMelodyPlayerクラスを使用
 #define USE_MODULAR_TICKER 1  // 1にするとTickerFooterクラスを使用
 #define USE_MODULAR_STATS 1   // 1にするとTemperatureStatisticsクラスを使用
+#define USE_MODULAR_SAFETY 1  // 1にするとSafetySystemクラスを使用
 
 #if USE_MODULAR_MELODY
 #include "Audio/MelodyPlayer.h"
@@ -22,6 +23,10 @@
 
 #if USE_MODULAR_STATS
 #include "Statistics/TemperatureStatistics.h"
+#endif
+
+#if USE_MODULAR_SAFETY
+#include "Safety/SafetySystem.h"
 #endif
 
 #define KM_SDA   21
@@ -162,6 +167,7 @@ uint32_t last_stall_check = 0;
 bool first_crack_confirmation_needed = false;
 bool first_crack_confirmed = false;
 
+#if !USE_MODULAR_SAFETY
 // Non-blocking emergency alert system
 bool emergency_active = false;
 uint32_t emergency_beep_start = 0;
@@ -173,6 +179,7 @@ constexpr uint32_t EMERGENCY_BEEP_INTERVAL = 300; // 300ms intervals
 bool auto_recovery_available = false;
 uint32_t recovery_dialog_start = 0;
 bool recovery_dialog_active = false;
+#endif
 
 // Non-blocking stage change beeps
 bool stage_beep_active = false;
@@ -209,12 +216,14 @@ static bool ble_restart_pending = false;
 static uint32_t last_full_data_send = 0;
 constexpr uint32_t FULL_DATA_INTERVAL = 15000; // 15秒間隔で完全データ送信
 
+#if !USE_MODULAR_SAFETY
 // Non-blocking critical warning beeps
 bool critical_beep_active = false;
 uint32_t critical_beep_start = 0;
 int critical_beep_count = 0;
 constexpr int MAX_CRITICAL_BEEPS = 3;
 constexpr uint32_t CRITICAL_BEEP_INTERVAL = 250; // 250ms between beeps
+#endif
 
 // Hysteresis values as constexpr
 constexpr float FIRE_HYSTERESIS = 0.5f;  // °C hysteresis for fire power changes
@@ -628,6 +637,74 @@ inline void updateTickerSystemInfoWrapper() {
 #endif
 }
 
+// 安全システムラッパー関数（モジュラー化対応）
+inline bool isEmergencyActive() {
+#if USE_MODULAR_SAFETY
+  return SAFETY->getState().emergency_active;
+#else
+  return emergency_active;
+#endif
+}
+
+inline bool isAutoRecoveryAvailable() {
+#if USE_MODULAR_SAFETY
+  return SAFETY->getState().auto_recovery_available;
+#else
+  return auto_recovery_available;
+#endif
+}
+
+inline bool isRecoveryDialogActive() {
+#if USE_MODULAR_SAFETY
+  return SAFETY->getState().recovery_dialog_active;
+#else
+  return recovery_dialog_active;
+#endif
+}
+
+inline void setEmergencyActive(bool active) {
+#if USE_MODULAR_SAFETY
+  if (!active) {
+    SAFETY->resetEmergency();
+  }
+  // Note: Setting to true is handled by checkEmergencyConditions
+#else
+  emergency_active = active;
+#endif
+}
+
+inline void executeAutoRecovery() {
+#if USE_MODULAR_SAFETY
+  SAFETY->executeAutoRecovery();
+#else
+  if (auto_recovery_available && emergency_active) {
+    emergency_active = false;
+    emergency_beep_count = MAX_EMERGENCY_BEEPS;
+    auto_recovery_available = false;
+    recovery_dialog_active = false;
+  }
+#endif
+}
+
+inline void showRecoveryDialog(bool show) {
+#if USE_MODULAR_SAFETY
+  SAFETY->showRecoveryDialog(show);
+#else
+  recovery_dialog_active = show;
+  if (show) {
+    recovery_dialog_start = millis();
+  }
+#endif
+}
+
+inline void setAutoRecoveryAvailable(bool available) {
+#if USE_MODULAR_SAFETY
+  // Handled internally by SafetySystem
+#else
+  auto_recovery_available = available;
+#endif
+}
+
 // BLE Server callbacks
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
@@ -662,6 +739,11 @@ void setup() {
 #if USE_MODULAR_STATS
   // TemperatureStatistics初期化
   TEMP_STATS->begin();
+#endif
+
+#if USE_MODULAR_SAFETY
+  // SafetySystem初期化
+  SAFETY->begin();
 #endif
 
   // I2C明示的初期化（M5Unifiedの実装変更に対応）
@@ -945,12 +1027,9 @@ void handleButtons() {
     
     if (M5.BtnA.wasPressed() && !M5.BtnB.isPressed()) {
       // セオドア提言：緊急時の自動復旧機能
-      if (emergency_active && auto_recovery_available) {
+      if (isEmergencyActive() && isAutoRecoveryAvailable()) {
         // 自動復旧実行
-        emergency_active = false;
-        emergency_beep_count = 0;
-        auto_recovery_available = false;
-        recovery_dialog_active = false;
+        executeAutoRecovery();
         need_full_redraw = true;
         
         // 復旧成功メッセージ（非ブロッキング表示）
@@ -1065,8 +1144,10 @@ void handleButtons() {
       roast_guide_active = false;
       first_crack_detected = false;
       second_crack_detected = false;
-      emergency_active = false;  // Theodore提言：緊急停止状態もリセット
+      setEmergencyActive(false);  // Theodore提言：緊急停止状態もリセット
+#if !USE_MODULAR_SAFETY
       emergency_beep_count = 0;
+#endif
       need_full_redraw = true;
       
       // Visual feedback for clear（非ブロッキング化）
@@ -2049,10 +2130,14 @@ void playStageChangeBeep() {
 }
 
 void playCriticalWarningBeep() {
+#if USE_MODULAR_SAFETY
+  SAFETY->playCriticalWarning();
+#else
   // 緊急警告時の断続ビープ（非ブロッキング開始）
   critical_beep_active = true;
   critical_beep_start = millis();
   critical_beep_count = 0;
+#endif
 }
 
 // セオドア提言：非ブロッキング三段階音響警告システム
@@ -2157,6 +2242,50 @@ void forceNextStage() {
 }
 
 void checkEmergencyConditions() {
+#if USE_MODULAR_SAFETY
+  // Configure safety thresholds
+  SAFETY->setDangerTemp(getDangerTemp(selected_roast_level));
+  SAFETY->setCriticalTemp(getCriticalTemp(selected_roast_level));
+  
+  // Set callbacks
+  static bool callbacks_set = false;
+  if (!callbacks_set) {
+    SAFETY->setBeepCallback(playBeep);
+    SAFETY->setEmergencyCallback([]() {
+      current_stage = STAGE_FINISH;
+      M5.Lcd.fillScreen(TFT_RED);
+      M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
+      M5.Lcd.setFont(&fonts::lgfxJapanGothic_36);
+      M5.Lcd.setCursor(50, 100);
+      M5.Lcd.printf("EMERGENCY STOP!");
+    });
+    callbacks_set = true;
+  }
+  
+  // Check conditions
+  SAFETY->checkEmergencyConditions(current_temp, current_ror, current_stage, roast_guide_active);
+  
+  // Draw recovery dialog if active
+  if (SAFETY->getState().recovery_dialog_active) {
+    SAFETY->drawRecoveryDialog(current_temp, current_ror);
+  }
+  
+  // Show danger warning
+  if (current_temp >= getDangerTemp(selected_roast_level)) {
+    M5.Lcd.fillRect(0, 100, 320, 40, TFT_RED);
+    M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
+    M5.Lcd.setFont(&fonts::lgfxJapanGothic_24);
+    M5.Lcd.setCursor(20, 110);
+    M5.Lcd.printf("!!! DANGER TEMP: %.1f°C !!!", current_temp);
+    M5.Lcd.setCursor(20, 125);
+    M5.Lcd.setFont(&fonts::lgfxJapanGothic_12);
+    M5.Lcd.printf("(%s Limit: %.0f°C)", getRoastLevelName(selected_roast_level), getDangerTemp(selected_roast_level));
+    M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+    
+    // 三段階音響警告
+    playTemperatureWarning(current_temp, getDangerTemp(selected_roast_level), getCriticalTemp(selected_roast_level));
+  }
+#else
   // ローストレベル依存の危険温度チェック
   float current_danger_temp = getDangerTemp(selected_roast_level);
   float current_critical_temp = getCriticalTemp(selected_roast_level);
@@ -2178,13 +2307,15 @@ void checkEmergencyConditions() {
   }
   
   // 緊急停止温度（非ブロッキング）
-  if (current_temp >= current_critical_temp && !emergency_active) {
+  if (current_temp >= current_critical_temp && !isEmergencyActive()) {
     current_stage = STAGE_FINISH;
     roast_guide_active = false;
-    emergency_active = true;
+    setEmergencyActive(true);
+#if !USE_MODULAR_SAFETY
     uint32_t now = millis();
     emergency_beep_start = now;
     emergency_beep_count = 0;
+#endif
     
     M5.Lcd.fillScreen(TFT_RED);
     M5.Lcd.setTextColor(TFT_WHITE, TFT_RED);
@@ -2193,6 +2324,7 @@ void checkEmergencyConditions() {
     M5.Lcd.printf("EMERGENCY STOP!");
   }
   
+#if !USE_MODULAR_SAFETY
   // 非ブロッキング緊急警告音処理
   if (emergency_active && emergency_beep_count < MAX_EMERGENCY_BEEPS) {
     uint32_t now = millis();
@@ -2214,9 +2346,10 @@ void checkEmergencyConditions() {
   if (emergency_active && emergency_beep_count >= MAX_EMERGENCY_BEEPS) {
     emergency_active = false;
   }
+#endif
   
   // セオドア提言：改善された自動復旧システム（追加安全条件）
-  if (emergency_active && current_temp < current_danger_temp - 10.0f) {
+  if (isEmergencyActive() && current_temp < current_danger_temp - 10.0f) {
     bool ror_safe = (current_ror < 0);  // RoRがマイナス（冷却中）
     bool temp_stable = (abs(current_ror) < 5.0f);  // RoRが±5°C/min以内で安定
     bool sufficient_cooldown = (current_temp < current_danger_temp - 15.0f);  // 15°C以上冷却
@@ -2224,13 +2357,15 @@ void checkEmergencyConditions() {
     // より厳密な安全条件チェック
     bool all_conditions_safe = ror_safe && (temp_stable || sufficient_cooldown);
     
-    if (all_conditions_safe && !auto_recovery_available) {
-      auto_recovery_available = true;
+    if (all_conditions_safe && !isAutoRecoveryAvailable()) {
+      setAutoRecoveryAvailable(true);
+#if !USE_MODULAR_SAFETY
       recovery_dialog_start = millis();
-      recovery_dialog_active = true;
+#endif
+      showRecoveryDialog(true);
     }
     
-    if (auto_recovery_available && recovery_dialog_active) {
+    if (isAutoRecoveryAvailable() && isRecoveryDialogActive()) {
       // 自動復旧提案ダイアログ（セオドア提言：改良版 - 詳細条件表示・拡張安全チェック）
       M5.Lcd.fillRect(25, 105, 270, 125, TFT_DARKGREEN);
       M5.Lcd.drawRect(25, 105, 270, 125, TFT_GREEN);
@@ -2251,6 +2386,7 @@ void checkEmergencyConditions() {
       M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
       
       // 5秒経過で自動的にダイアログを非表示
+#if !USE_MODULAR_SAFETY
       if (millis() - recovery_dialog_start > 5000) {
         recovery_dialog_active = false;
       }
@@ -2260,7 +2396,8 @@ void checkEmergencyConditions() {
         auto_recovery_available = false;
         recovery_dialog_active = false;
       }
-    } else if (auto_recovery_available && !recovery_dialog_active) {
+#endif
+    } else if (isAutoRecoveryAvailable() && !isRecoveryDialogActive()) {
       // 簡易表示
       M5.Lcd.fillRect(0, 150, 320, 30, TFT_GREEN);
       M5.Lcd.setTextColor(TFT_BLACK, TFT_GREEN);
@@ -2269,8 +2406,8 @@ void checkEmergencyConditions() {
       M5.Lcd.setTextColor(TFT_WHITE, TFT_BLACK);
     }
   } else {
-    auto_recovery_available = false;
-    recovery_dialog_active = false;
+    setAutoRecoveryAvailable(false);
+    showRecoveryDialog(false);
   }
   
   // RoR異常チェック（ガスコンロ特有）
@@ -2280,6 +2417,7 @@ void checkEmergencyConditions() {
     M5.Lcd.printf("!! RoR TOO HIGH - REDUCE HEAT !!");
     M5.Lcd.setTextColor(TFT_WHITE);
   }
+#endif
 }
 
 const char* getGasAdjustmentAdvice(FirePower current_fire, FirePower target_fire) {
@@ -2505,22 +2643,10 @@ void loop() {
   updateTickerFooterWrapper();
 }
 void handleNonBlockingBeeps() {
-  // Handle stage change beeps
-  if (stage_beep_active) {
-    uint32_t now = millis();
-    uint32_t elapsed = now - stage_beep_start;
-    uint32_t beep_time = stage_beep_count * STAGE_BEEP_INTERVAL;
-    
-    if (elapsed >= beep_time && stage_beep_count < MAX_STAGE_BEEPS) {
-      playBeep(stage_beep_durations[stage_beep_count], stage_beep_frequencies[stage_beep_count]);
-      stage_beep_count++;
-    }
-    
-    if (stage_beep_count >= MAX_STAGE_BEEPS) {
-      stage_beep_active = false;
-    }
-  }
-  
+#if USE_MODULAR_SAFETY
+  // Update safety system beeps (emergency and critical)
+  SAFETY->updateBeeps();
+#else
   // Handle critical warning beeps
   if (critical_beep_active) {
     uint32_t now = millis();
@@ -2534,6 +2660,23 @@ void handleNonBlockingBeeps() {
     
     if (critical_beep_count >= MAX_CRITICAL_BEEPS) {
       critical_beep_active = false;
+    }
+  }
+#endif
+
+  // Handle stage change beeps (kept in main for now)
+  if (stage_beep_active) {
+    uint32_t now = millis();
+    uint32_t elapsed = now - stage_beep_start;
+    uint32_t beep_time = stage_beep_count * STAGE_BEEP_INTERVAL;
+    
+    if (elapsed >= beep_time && stage_beep_count < MAX_STAGE_BEEPS) {
+      playBeep(stage_beep_durations[stage_beep_count], stage_beep_frequencies[stage_beep_count]);
+      stage_beep_count++;
+    }
+    
+    if (stage_beep_count >= MAX_STAGE_BEEPS) {
+      stage_beep_active = false;
     }
   }
   
