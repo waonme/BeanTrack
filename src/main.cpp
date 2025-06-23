@@ -39,6 +39,58 @@ static bool sprite_initialized = false;
 
 constexpr uint8_t  LCD_BRIGHTNESS = 1;
 
+// 理想プロファイル定義
+struct ProfilePoint {
+  uint16_t sec;  // 経過秒
+  float    temp; // 目標温度 (°C)
+};
+
+// 各焙煎レベルの理想プロファイル（時刻と温度の折れ線）
+constexpr ProfilePoint PROFILE_LIGHT[] = {
+  {   0,  25 },   // 投入直後 BT
+  { 240, 150 },   // 乾燥終点
+  { 420, 190 },   // メイラード終点（1ハゼ直前）
+  { 450, 195 },   // 1ハゼ開始
+  { 510, 200 },   // 1ハゼ終点
+  { 540, 205 }    // 排出
+};
+
+constexpr ProfilePoint PROFILE_MEDIUM[] = {
+  {   0,  25 },
+  { 300, 150 },
+  { 480, 200 },
+  { 510, 202 },
+  { 600, 210 },
+  { 660, 218 }
+};
+
+constexpr ProfilePoint PROFILE_MEDIUM_DARK[] = {
+  {   0,  25 },
+  { 330, 150 },
+  { 540, 200 },
+  { 570, 203 },
+  { 720, 220 },
+  { 780, 225 }
+};
+
+constexpr ProfilePoint PROFILE_DARK[] = {
+  {   0,  25 },
+  { 360, 150 },
+  { 600, 200 },
+  { 630, 205 },
+  { 840, 225 },
+  { 900, 230 }
+};
+
+constexpr ProfilePoint PROFILE_FRENCH[] = {
+  {   0,  25 },
+  { 360, 150 },
+  { 630, 200 },
+  { 660, 205 },
+  { 900, 230 },
+  { 960, 238 }
+};
+
 enum DisplayMode {
   MODE_GRAPH = 0,
   MODE_STATS = 1,
@@ -313,6 +365,7 @@ bool btnB_long_press_handled = false;
 constexpr uint32_t LONG_PRESS_DURATION = 2000;  // 2 seconds
 
 void drawGraph();
+void drawIdealCurve(const ProfilePoint* profile, size_t len);
 void drawCurrentValue();
 void drawStats();
 void drawRoR();
@@ -676,6 +729,41 @@ void drawCurrentValue() {
 /**
  * 現在の buf 内容でグラフを再描画
  */
+void drawIdealCurve(const ProfilePoint* profile, size_t len) {
+  if (!sprite_initialized || !profile || len < 2) return;
+
+  // ドット間隔ピクセル
+  constexpr int DOT_STEP = 4;
+
+  for (size_t i = 1; i < len; ++i) {
+    // 区間の２端
+    float t0 = profile[i - 1].sec;
+    float v0 = profile[i - 1].temp;
+    float t1 = profile[i].sec;
+    float v1 = profile[i].temp;
+
+    // 区間を 1 秒刻みで線形補間しドットを置く
+    for (uint16_t s = t0; s <= t1; ++s) {
+      // 1 s → 1 px で 15 分グラフ (900 s) に収まる
+      float x_ratio = (float)s / (BUF_SIZE - 1);        // 0.0 – 1.0
+      int   x = x_ratio * GRAPH_W;
+
+      // 線形補間温度
+      float f = (t1 > t0) ? (float)(s - t0) / (t1 - t0) : 0;
+      float temp = v0 + f * (v1 - v0);
+
+      // 温度を Y 座標へ
+      float y_ratio = (temp - TEMP_MIN) / (TEMP_MAX - TEMP_MIN);
+      int   y = GRAPH_H - y_ratio * GRAPH_H;
+
+      // ドット間隔ごとに描画（範囲チェック付き）
+      if ((s % DOT_STEP) == 0 && x >= 0 && x < GRAPH_W && y >= 0 && y < GRAPH_H) {
+        graph_sprite.drawPixel(x, y, TFT_DARKGREY);
+      }
+    }
+  }
+}
+
 void drawGraph() {
   if (count == 0 || !sprite_initialized) return;
 
@@ -704,6 +792,28 @@ void drawGraph() {
   for (int y = 0; y < critical_height; y += 4) {
     uint16_t color = (y % 8 < 4) ? TFT_RED : TFT_DARKGREY;
     graph_sprite.drawFastHLine(0, y, GRAPH_W, color);
+  }
+
+  // 理想曲線を描画（背景として）
+  switch (ROAST_GUIDE->getSelectedLevel()) {
+    case RoastGuide::ROAST_LIGHT:
+    case RoastGuide::ROAST_MEDIUM_LIGHT:
+      drawIdealCurve(PROFILE_LIGHT, sizeof(PROFILE_LIGHT)/sizeof(ProfilePoint));
+      break;
+    case RoastGuide::ROAST_MEDIUM:
+      drawIdealCurve(PROFILE_MEDIUM, sizeof(PROFILE_MEDIUM)/sizeof(ProfilePoint));
+      break;
+    case RoastGuide::ROAST_MEDIUM_DARK:
+      drawIdealCurve(PROFILE_MEDIUM_DARK, sizeof(PROFILE_MEDIUM_DARK)/sizeof(ProfilePoint));
+      break;
+    case RoastGuide::ROAST_DARK:
+      drawIdealCurve(PROFILE_DARK, sizeof(PROFILE_DARK)/sizeof(ProfilePoint));
+      break;
+    case RoastGuide::ROAST_FRENCH:
+      drawIdealCurve(PROFILE_FRENCH, sizeof(PROFILE_FRENCH)/sizeof(ProfilePoint));
+      break;
+    default:
+      break;
   }
 
   // 折れ線をSprite内に描画
